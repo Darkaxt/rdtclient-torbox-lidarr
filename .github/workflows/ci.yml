@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n scripts/*.sh
+      - name: Ensure no obvious secret files
+        run: |
+          test ! -e .env
+          test ! -d db
+          test ! -d logs
+          test ! -d downloads
+          ! find . -type f \( -name '*.key' -o -name '*.pem' -o -name '*.ppk' -o -name '*.db' -o -name '*.log' \) | grep .

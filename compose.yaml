@@ -1,0 +1,27 @@
+services:
+  rdtclient:
+    image: rogerfar/rdtclient:${RDTCLIENT_TAG:-latest}
+    container_name: ${RDTCLIENT_CONTAINER_NAME:-rdtclient}
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${RDTCLIENT_CONFIG_DIR:-/srv/rdtclient/config}:/data/db
+      - ${RDTCLIENT_DOWNLOAD_DIR:-/srv/rdtclient/downloads}:/data/downloads
+    ports:
+      - "${RDTCLIENT_BIND:-127.0.0.1}:${RDTCLIENT_PORT:-6500}:6500"
+    security_opt:
+      - label=disable
+    networks:
+      - lidarr-stack_default
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  lidarr-stack_default:
+    external: true
