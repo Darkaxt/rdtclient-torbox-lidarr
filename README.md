@@ -8,10 +8,14 @@ RDTClient database, logs, downloads, or live Lidarr configuration.
 
 ## Layout
 
-- `compose.yaml` runs upstream `rogerfar/rdtclient`.
+- `compose.yaml` runs upstream `rogerfar/rdtclient` by default, or a local
+  patched image via `RDTCLIENT_IMAGE` / `RDTCLIENT_TAG`.
 - `.env.example` contains non-secret deployment defaults.
+- `patches/` contains source patches applied to upstream RDTClient for this
+  private deployment.
 - `scripts/check-health.sh` verifies the private HTTP bind.
 - `docs/lidarr-wiring.md` describes the Lidarr download-client setup.
+- `docs/patched-rdtclient.md` describes the TorBox materialization patch.
 - `docs/rollback.md` covers safe rollback and cleanup boundaries.
 
 ## Quick Start
@@ -21,6 +25,13 @@ RDTClient database, logs, downloads, or live Lidarr configuration.
 
    ```sh
    docker compose up -d
+   ```
+
+   To run the patched local image built from `patches/`, set:
+
+   ```sh
+   RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
+   RDTCLIENT_TAG=slot-starvation-20260504
    ```
 
 3. Open RDTClient only from the host or a trusted tunnel and configure your own

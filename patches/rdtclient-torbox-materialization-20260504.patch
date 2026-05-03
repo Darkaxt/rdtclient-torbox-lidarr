@@ -1,0 +1,367 @@
+diff --git a/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs b/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
+index 41bbe7d..973dae7 100644
+--- a/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
++++ b/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
+@@ -83,6 +83,10 @@ public class BezzadDownloader : IDownloader
+             {
+                 error = args.Error.Message;
+             }
++            else
++            {
++                error = FinalizeCompletedDownload(_filePath);
++            }
+ 
+             DownloadComplete?.Invoke(this,
+                                      new()
+@@ -136,6 +140,39 @@ public class BezzadDownloader : IDownloader
+         return Task.CompletedTask;
+     }
+ 
++    public static String? FinalizeCompletedDownload(String filePath)
++    {
++        if (File.Exists(filePath))
++        {
++            return null;
++        }
++
++        var tempPath = $"{filePath}.download";
++
++        if (!File.Exists(tempPath))
++        {
++            return null;
++        }
++
++        try
++        {
++            var directory = Path.GetDirectoryName(filePath);
++
++            if (!String.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
++            {
++                Directory.CreateDirectory(directory);
++            }
++
++            File.Move(tempPath, filePath);
++
++            return null;
++        }
++        catch (Exception ex)
++        {
++            return $"Download completed but failed to finalize {tempPath}: {ex.Message}";
++        }
++    }
++
+     private void SetSettings()
+     {
+         var settingDownloadMaxSpeed = Settings.Get.DownloadClient.MaxSpeed;
+diff --git a/server/RdtClient.Service/Services/TorrentRunner.cs b/server/RdtClient.Service/Services/TorrentRunner.cs
+index bb9da16..85484e1 100644
+--- a/server/RdtClient.Service/Services/TorrentRunner.cs
++++ b/server/RdtClient.Service/Services/TorrentRunner.cs
+@@ -19,6 +19,8 @@ public class TorrentRunner(
+     IHttpClientFactory httpClientFactory,
+     IRateLimitCoordinator coordinator)
+ {
++    private static readonly TimeSpan NonProgressingTorBoxSlotGrace = TimeSpan.FromMinutes(5);
++
+     public static readonly ConcurrentDictionary<Guid, DownloadClient> ActiveDownloadClients = new();
+     public static readonly ConcurrentDictionary<Guid, UnpackClient> ActiveUnpackClients = new();
+     private DateTimeOffset? _lastNextAllowedAt;
+@@ -368,6 +370,7 @@ public class TorrentRunner(
+ 
+         // Process torrents in DebridQueue
+         var torrentsToAddToProvider = allTorrents.Where(m => m.RdId == null && m.RdAdded == null && m.FileOrMagnet != null && m.RdStatus == TorrentStatus.Queued)
++                                                 .OrderByDescending(m => m.Added)
+                                                  .ToList();
+ 
+         if (torrentsToAddToProvider.Count != 0)
+@@ -380,7 +383,8 @@ public class TorrentRunner(
+             }
+             else
+             {
+-                var downloadingTorrentsCount = allTorrents.Count(m => m.RdStatus is not (TorrentStatus.Queued or TorrentStatus.Finished or TorrentStatus.Error));
++                var now = DateTimeOffset.UtcNow;
++                var downloadingTorrentsCount = allTorrents.Count(m => CountsAgainstProviderDownloadLimit(m, now));
+ 
+                 var maxParallelDownloads = Settings.Get.Provider.MaxParallelDownloads;
+ 
+@@ -389,7 +393,7 @@ public class TorrentRunner(
+                                 maxParallelDownloads,
+                                 torrentsToAddToProvider.Count);
+ 
+-                var dequeueCount = maxParallelDownloads == 0 ? torrentsToAddToProvider.Count : maxParallelDownloads - downloadingTorrentsCount;
++                var dequeueCount = maxParallelDownloads == 0 ? torrentsToAddToProvider.Count : Math.Max(0, maxParallelDownloads - downloadingTorrentsCount);
+ 
+                 foreach (var torrent in torrentsToAddToProvider.Take(dequeueCount))
+                 {
+@@ -782,6 +786,49 @@ public class TorrentRunner(
+         });
+     }
+ 
++    public static Boolean CountsAgainstProviderDownloadLimit(Torrent torrent, DateTimeOffset now)
++    {
++        if (torrent.RdStatus is null or TorrentStatus.Queued or TorrentStatus.Finished or TorrentStatus.Error)
++        {
++            return false;
++        }
++
++        if (IsNonProgressingTorBoxSlot(torrent, now))
++        {
++            return false;
++        }
++
++        return true;
++    }
++
++    private static Boolean IsNonProgressingTorBoxSlot(Torrent torrent, DateTimeOffset now)
++    {
++        var isTorBox = torrent.ClientKind == Provider.TorBox || Settings.Get.Provider.Provider == Provider.TorBox;
++
++        if (!isTorBox || torrent.RdStatus is not (TorrentStatus.Processing or TorrentStatus.Downloading))
++        {
++            return false;
++        }
++
++        if (torrent.Downloads.Count != 0 || torrent.RdSpeed > 0)
++        {
++            return false;
++        }
++
++        var providerStartedAt = torrent.RdAdded ?? torrent.Added;
++
++        if (now - providerStartedAt < NonProgressingTorBoxSlotGrace)
++        {
++            return false;
++        }
++
++        var raw = torrent.RdStatusRaw ?? "";
++
++        return raw.StartsWith("queued", StringComparison.OrdinalIgnoreCase) ||
++               raw.StartsWith("stalled", StringComparison.OrdinalIgnoreCase) ||
++               raw.StartsWith("checking", StringComparison.OrdinalIgnoreCase);
++    }
++
+     private void Log(String message, Download? download, Torrent? torrent)
+     {
+         if (download != null)
+diff --git a/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs b/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs
+new file mode 100644
+index 0000000..0f2ed66
+--- /dev/null
++++ b/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs
+@@ -0,0 +1,53 @@
++using RdtClient.Service.Services.Downloaders;
++
++namespace RdtClient.Service.Test.Services.Downloaders;
++
++public class BezzadDownloaderTest
++{
++    [Fact]
++    public void FinalizeCompletedDownload_RenamesDownloaderTempFile()
++    {
++        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
++        Directory.CreateDirectory(directory);
++
++        try
++        {
++            var finalPath = Path.Combine(directory, "book.epub");
++            var tempPath = $"{finalPath}.download";
++
++            File.WriteAllText(tempPath, "content");
++
++            var error = BezzadDownloader.FinalizeCompletedDownload(finalPath);
++
++            Assert.Null(error);
++            Assert.True(File.Exists(finalPath));
++            Assert.False(File.Exists(tempPath));
++            Assert.Equal("content", File.ReadAllText(finalPath));
++        }
++        finally
++        {
++            Directory.Delete(directory, true);
++        }
++    }
++
++    [Fact]
++    public void FinalizeCompletedDownload_LeavesExistingFinalFileUntouched()
++    {
++        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
++        Directory.CreateDirectory(directory);
++
++        try
++        {
++            var finalPath = Path.Combine(directory, "book.epub");
++            var tempPath = $"{finalPath}.download";
++
++            File.WriteAllText(finalPath, "final");
++            File.WriteAllText(tempPath, "temp");
++
++            var error = BezzadDownloader.FinalizeCompletedDownload(finalPath);
++
++            Assert.Null(error);
++            Assert.Equal("final", File.ReadAllText(finalPath));
++            Assert.True(File.Exists(tempPath));
++        }
++        finally
++        {
++            Directory.Delete(directory, true);
++        }
++    }
++}
+diff --git a/server/RdtClient.Service.Test/Services/TorrentRunnerTest.cs b/server/RdtClient.Service.Test/Services/TorrentRunnerTest.cs
+new file mode 100644
+index 0000000..3ff4e20
+--- /dev/null
++++ b/server/RdtClient.Service.Test/Services/TorrentRunnerTest.cs
+@@ -0,0 +1,135 @@
++using RdtClient.Data.Enums;
++using RdtClient.Data.Models.Data;
++using RdtClient.Service.Services;
++
++namespace RdtClient.Service.Test.Services;
++
++public class TorrentRunnerTest
++{
++    [Fact]
++    public void CountsAgainstProviderDownloadLimit_IgnoresOldTorBoxStalledWithoutDownloads()
++    {
++        var now = DateTimeOffset.UtcNow;
++        var previousProvider = Settings.Get.Provider.Provider;
++
++        try
++        {
++            Settings.Get.Provider.Provider = Provider.TorBox;
++
++            var torrent = new Torrent
++            {
++                Added = now.AddMinutes(-10),
++                RdStatus = TorrentStatus.Downloading,
++                RdStatusRaw = "stalled (no seeds)",
++                RdSpeed = 0
++            };
++
++            Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
++        }
++        finally
++        {
++            Settings.Get.Provider.Provider = previousProvider;
++        }
++    }
++
++    [Fact]
++    public void CountsAgainstProviderDownloadLimit_KeepsFreshTorBoxStalledAsActive()
++    {
++        var now = DateTimeOffset.UtcNow;
++        var previousProvider = Settings.Get.Provider.Provider;
++
++        try
++        {
++            Settings.Get.Provider.Provider = Provider.TorBox;
++
++            var torrent = new Torrent
++            {
++                Added = now.AddMinutes(-1),
++                RdStatus = TorrentStatus.Downloading,
++                RdStatusRaw = "stalled (no seeds)",
++                RdSpeed = 0
++            };
++
++            Assert.True(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
++        }
++        finally
++        {
++            Settings.Get.Provider.Provider = previousProvider;
++        }
++    }
++
++    [Fact]
++    public void CountsAgainstProviderDownloadLimit_IgnoresOldTorBoxProviderQueuedWithoutDownloads()
++    {
++        var now = DateTimeOffset.UtcNow;
++        var previousProvider = Settings.Get.Provider.Provider;
++
++        try
++        {
++            Settings.Get.Provider.Provider = Provider.TorBox;
++
++            var torrent = new Torrent
++            {
++                Added = now.AddMinutes(-20),
++                RdAdded = now.AddMinutes(-10),
++                RdStatus = TorrentStatus.Processing,
++                RdStatusRaw = "queued",
++                RdSpeed = 0
++            };
++
++            Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
++        }
++        finally
++        {
++            Settings.Get.Provider.Provider = previousProvider;
++        }
++    }
++
++    [Fact]
++    public void CountsAgainstProviderDownloadLimit_KeepsFreshTorBoxProviderQueuedAsActive()
++    {
++        var now = DateTimeOffset.UtcNow;
++        var previousProvider = Settings.Get.Provider.Provider;
++
++        try
++        {
++            Settings.Get.Provider.Provider = Provider.TorBox;
++
++            var torrent = new Torrent
++            {
++                Added = now.AddMinutes(-20),
++                RdAdded = now.AddMinutes(-1),
++                RdStatus = TorrentStatus.Processing,
++                RdStatusRaw = "queued",
++                RdSpeed = 0
++            };
++
++            Assert.True(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
++        }
++        finally
++        {
++            Settings.Get.Provider.Provider = previousProvider;
++        }
++    }
++
++    [Fact]
++    public void CountsAgainstProviderDownloadLimit_KeepsActiveTorBoxDownloadWithHostDownloads()
++    {
++        var now = DateTimeOffset.UtcNow;
++        var previousProvider = Settings.Get.Provider.Provider;
++
++        try
++        {
++            Settings.Get.Provider.Provider = Provider.TorBox;
++
++            var torrent = new Torrent
++            {
++                Added = now.AddMinutes(-10),
++                RdStatus = TorrentStatus.Downloading,
++                RdStatusRaw = "stalled (no seeds)",
++                Downloads =
++                [
++                    new()
++                ]
++            };
++
++            Assert.True(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
++        }
++        finally
++        {
++            Settings.Get.Provider.Provider = previousProvider;
++        }
++    }
++
++    [Fact]
++    public void CountsAgainstProviderDownloadLimit_DoesNotCountQueuedOrFinished()
++    {
++        var now = DateTimeOffset.UtcNow;
++
++        Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(new() { RdStatus = TorrentStatus.Queued }, now));
++        Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(new() { RdStatus = TorrentStatus.Finished }, now));
++    }
++}

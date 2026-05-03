@@ -1,6 +1,6 @@
 services:
   rdtclient:
-    image: rogerfar/rdtclient:${RDTCLIENT_TAG:-latest}
+    image: ${RDTCLIENT_IMAGE:-rogerfar/rdtclient}:${RDTCLIENT_TAG:-latest}
     container_name: ${RDTCLIENT_CONTAINER_NAME:-rdtclient}
     restart: unless-stopped
     environment:
