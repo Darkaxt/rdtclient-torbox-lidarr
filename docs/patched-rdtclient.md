@@ -2,7 +2,10 @@
 
 This wrapper normally runs upstream `rogerfar/rdtclient`. The private Bindery
 pipeline currently uses a local image built from upstream RDTClient plus
-`patches/rdtclient-torbox-materialization-20260504.patch`.
+these wrapper patches, applied in order:
+
+1. `patches/rdtclient-torbox-materialization-20260504.patch`
+2. `patches/rdtclient-slot-recovery-20260505.patch`
 
 ## Patch Purpose
 
@@ -18,6 +21,10 @@ validation run:
 - Host materialization: the internal Bezzad downloader promotes completed
   `<filename>.download` files to the final filename before RDTClient marks the
   download complete.
+- Local slot recovery: deleting torrents removes active Bezzad download/unpack
+  clients before provider cleanup, TorBox remote deletion is best-effort, and
+  stale started Bezzad downloads are reset or failed so the single download slot
+  is not held forever.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -31,15 +38,16 @@ git clone https://github.com/rogerfar/rdt-client.git rdt-client
 cd rdt-client
 git checkout f5ea1e0
 git apply ../patches/rdtclient-torbox-materialization-20260504.patch
+git apply ../patches/rdtclient-slot-recovery-20260505.patch
 docker build --platform linux/arm64/v8 \
-  -t rdtclient-torbox-lidarr:slot-starvation-20260504 .
+  -t rdtclient-torbox-lidarr:slot-recovery-20260505 .
 ```
 
 Then configure this wrapper:
 
 ```sh
 RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-RDTCLIENT_TAG=slot-starvation-20260504
+RDTCLIENT_TAG=slot-recovery-20260505
 docker compose up -d
 ```
 
@@ -54,5 +62,5 @@ Focused test filter before the full build:
 
 ```sh
 dotnet test RdtClient.Service.Test/RdtClient.Service.Test.csproj \
-  --filter "FullyQualifiedName~TorrentRunnerTest|FullyQualifiedName~TorBoxDebridClientTest|FullyQualifiedName~BezzadDownloaderTest"
+  --filter "FullyQualifiedName~TorrentRunnerSlotRecoveryTest|FullyQualifiedName~Delete_WhenDownloadIsActive_RemovesActiveDownloadBeforeDeletingData|FullyQualifiedName~Delete_WhenTorBoxRemoteDeleteFails_StillDeletesLocalData|FullyQualifiedName~TorrentRunnerTest|FullyQualifiedName~TorBoxDebridClientTest|FullyQualifiedName~BezzadDownloaderTest"
 ```

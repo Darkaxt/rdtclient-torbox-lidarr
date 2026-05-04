@@ -1,0 +1,439 @@
+diff --git a/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs b/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
+new file mode 100644
+index 0000000..f05ebef
+--- /dev/null
++++ b/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
+@@ -0,0 +1,94 @@
++using Moq;
++using RdtClient.Data.Enums;
++using RdtClient.Data.Models.Data;
++using RdtClient.Service.Services;
++using DownloadClient = RdtClient.Service.Services.DownloadClient;
++
++namespace RdtClient.Service.Test.Services;
++
++public class TorrentRunnerSlotRecoveryTest : IDisposable
++{
++    public void Dispose()
++    {
++        TorrentRunner.ActiveDownloadClients.Clear();
++        TorrentRunner.ActiveUnpackClients.Clear();
++    }
++
++    [Fact]
++    public async Task RecoverStaleDownloads_WhenActiveBezzadDownloadHasNoProgress_RequeuesAndFreesSlot()
++    {
++        var now = DateTimeOffset.UtcNow;
++        var downloadId = Guid.NewGuid();
++        var torrent = new Torrent
++        {
++            TorrentId = Guid.NewGuid(),
++            RdName = "stale audiobook",
++            DownloadClient = RdtClient.Data.Enums.DownloadClient.Bezzad,
++            DownloadRetryAttempts = 2,
++            Downloads =
++            [
++                new()
++                {
++                    DownloadId = downloadId,
++                    DownloadQueued = now.AddMinutes(-20),
++                    DownloadStarted = now.AddMinutes(-16),
++                    RetryCount = 0
++                }
++            ]
++        };
++        torrent.Downloads[0].Torrent = torrent;
++
++        var activeClient = new DownloadClient(torrent.Downloads[0], torrent, "/downloads", "bindery");
++        TorrentRunner.ActiveDownloadClients.TryAdd(downloadId, activeClient);
++
++        var downloads = new Mock<IDownloads>();
++
++        var recovered = await TorrentRunner.RecoverStaleDownloads([torrent], downloads.Object, now, TimeSpan.FromMinutes(15));
++
++        Assert.Equal(1, recovered);
++        Assert.False(TorrentRunner.ActiveDownloadClients.ContainsKey(downloadId));
++        downloads.Verify(d => d.Reset(downloadId), Times.Once);
++        downloads.Verify(d => d.UpdateRetryCount(downloadId, 1), Times.Once);
++        downloads.Verify(d => d.UpdateError(It.IsAny<Guid>(), It.IsAny<String?>()), Times.Never);
++        downloads.Verify(d => d.UpdateCompleted(It.IsAny<Guid>(), It.IsAny<DateTimeOffset?>()), Times.Never);
++    }
++
++    [Fact]
++    public async Task RecoverStaleDownloads_WhenRetryBudgetIsExhausted_FailsDownloadAndFreesSlot()
++    {
++        var now = DateTimeOffset.UtcNow;
++        var downloadId = Guid.NewGuid();
++        var torrent = new Torrent
++        {
++            TorrentId = Guid.NewGuid(),
++            RdName = "exhausted audiobook",
++            DownloadClient = RdtClient.Data.Enums.DownloadClient.Bezzad,
++            DownloadRetryAttempts = 1,
++            Downloads =
++            [
++                new()
++                {
++                    DownloadId = downloadId,
++                    DownloadQueued = now.AddMinutes(-20),
++                    DownloadStarted = now.AddMinutes(-16),
++                    RetryCount = 1
++                }
++            ]
++        };
++        torrent.Downloads[0].Torrent = torrent;
++
++        var activeClient = new DownloadClient(torrent.Downloads[0], torrent, "/downloads", "bindery");
++        TorrentRunner.ActiveDownloadClients.TryAdd(downloadId, activeClient);
++
++        var downloads = new Mock<IDownloads>();
++
++        var recovered = await TorrentRunner.RecoverStaleDownloads([torrent], downloads.Object, now, TimeSpan.FromMinutes(15));
++
++        Assert.Equal(1, recovered);
++        Assert.False(TorrentRunner.ActiveDownloadClients.ContainsKey(downloadId));
++        downloads.Verify(d => d.Reset(It.IsAny<Guid>()), Times.Never);
++        downloads.Verify(d => d.UpdateRetryCount(It.IsAny<Guid>(), It.IsAny<Int32>()), Times.Never);
++        downloads.Verify(d => d.UpdateError(downloadId, It.Is<String>(s => s.Contains("stale Bezzad download", StringComparison.OrdinalIgnoreCase))), Times.Once);
++        downloads.Verify(d => d.UpdateCompleted(downloadId, It.IsAny<DateTimeOffset?>()), Times.Once);
++    }
++}
+diff --git a/server/RdtClient.Service.Test/Services/TorrentsTest.cs b/server/RdtClient.Service.Test/Services/TorrentsTest.cs
+index eb4435d..c9d9825 100644
+--- a/server/RdtClient.Service.Test/Services/TorrentsTest.cs
++++ b/server/RdtClient.Service.Test/Services/TorrentsTest.cs
+@@ -5,12 +5,16 @@ using System.Text;
+ using System.Text.RegularExpressions;
+ using Microsoft.Extensions.Logging;
+ using Moq;
++using Moq.Protected;
+ using RdtClient.Data.Data;
+ using RdtClient.Data.Enums;
+ using RdtClient.Data.Models.Data;
+ using RdtClient.Data.Models.Internal;
++using RdtClient.Service.Helpers;
+ using RdtClient.Service.Services;
++using RdtClient.Service.Services.DebridClients;
+ using RdtClient.Service.Wrappers;
++using TorBoxNET;
+ using DownloadClient = RdtClient.Data.Enums.DownloadClient;
+ using TorrentsService = RdtClient.Service.Services.Torrents;
+ 
+@@ -43,6 +47,12 @@ internal class Mocks
+ 
+ public class TorrentsTest
+ {
++    private static void ClearActiveClients()
++    {
++        TorrentRunner.ActiveDownloadClients.Clear();
++        TorrentRunner.ActiveUnpackClients.Clear();
++    }
++
+     public static TheoryData<Torrent, List<Download>> TorrentAndDownload()
+     {
+         var torrent = new Torrent
+@@ -427,4 +437,119 @@ public class TorrentsTest
+                                                 It.IsAny<Torrent>()),
+                                      Times.Once);
+     }
++
++    [Fact]
++    public async Task Delete_WhenDownloadIsActive_RemovesActiveDownloadBeforeDeletingData()
++    {
++        ClearActiveClients();
++
++        try
++        {
++            var mocks = new Mocks();
++            var torrentId = Guid.NewGuid();
++            var downloadId = Guid.NewGuid();
++            var torrent = new Torrent
++            {
++                TorrentId = torrentId,
++                RdName = "active audiobook",
++                Category = "bindery",
++                DownloadClient = DownloadClient.Bezzad,
++                Downloads =
++                [
++                    new()
++                    {
++                        DownloadId = downloadId,
++                        TorrentId = torrentId,
++                        FileName = "track.mp3",
++                        Path = "https://example.invalid/track.mp3"
++                    }
++                ]
++            };
++            torrent.Downloads[0].Torrent = torrent;
++
++            TorrentRunner.ActiveDownloadClients.TryAdd(downloadId, new RdtClient.Service.Services.DownloadClient(torrent.Downloads[0], torrent, "/downloads", "bindery"));
++            mocks.TorrentDataMock.Setup(t => t.GetById(torrentId)).ReturnsAsync(torrent);
++
++            var torrents = new TorrentsService(mocks.TorrentsLoggerMock.Object,
++                                               mocks.TorrentDataMock.Object,
++                                               mocks.DownloadsMock.Object,
++                                               mocks.ProcessFactoryMock.Object,
++                                               new MockFileSystem(),
++                                               mocks.EnricherMock.Object,
++                                               null!,
++                                               null!,
++                                               null!,
++                                               null!,
++                                               null!);
++
++            await torrents.Delete(torrentId, true, false, false);
++
++            Assert.False(TorrentRunner.ActiveDownloadClients.ContainsKey(downloadId));
++            mocks.TorrentDataMock.Verify(t => t.Delete(torrentId), Times.Once);
++        }
++        finally
++        {
++            ClearActiveClients();
++        }
++    }
++
++    [Fact]
++    public async Task Delete_WhenTorBoxRemoteDeleteFails_StillDeletesLocalData()
++    {
++        var previousProvider = Settings.Get.Provider.Provider;
++
++        try
++        {
++            Settings.Get.Provider.Provider = Provider.TorBox;
++
++            var mocks = new Mocks();
++            var torrentId = Guid.NewGuid();
++            var torrent = new Torrent
++            {
++                TorrentId = torrentId,
++                RdName = "remote cleanup failure",
++                RdId = "remote-id",
++                Type = DownloadType.Torrent,
++                Downloads = []
++            };
++
++            mocks.TorrentDataMock.Setup(t => t.GetById(torrentId)).ReturnsAsync(torrent);
++
++            var torrentsApiMock = new Mock<ITorrentsApi>();
++            torrentsApiMock.Setup(m => m.ControlAsync("remote-id", "delete", It.IsAny<CancellationToken>()))
++                           .ThrowsAsync(new InvalidOperationException("remote delete failed"));
++
++            var torBoxClientMock = new Mock<ITorBoxNetClient>();
++            torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
++
++            var torBoxDebridClientMock = new Mock<TorBoxDebridClient>(new Mock<ILogger<TorBoxDebridClient>>().Object,
++                                                                      new Mock<IHttpClientFactory>().Object,
++                                                                      new Mock<IDownloadableFileFilter>().Object,
++                                                                      new Mock<IRateLimitCoordinator>().Object);
++            torBoxDebridClientMock.Protected()
++                                  .Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>())
++                                  .Returns(torBoxClientMock.Object);
++
++            var torrents = new TorrentsService(mocks.TorrentsLoggerMock.Object,
++                                               mocks.TorrentDataMock.Object,
++                                               mocks.DownloadsMock.Object,
++                                               mocks.ProcessFactoryMock.Object,
++                                               new MockFileSystem(),
++                                               mocks.EnricherMock.Object,
++                                               null!,
++                                               null!,
++                                               null!,
++                                               null!,
++                                               torBoxDebridClientMock.Object);
++
++            await torrents.Delete(torrentId, true, true, false);
++
++            mocks.TorrentDataMock.Verify(t => t.Delete(torrentId), Times.Once);
++            torrentsApiMock.Verify(m => m.ControlAsync("remote-id", "delete", It.IsAny<CancellationToken>()), Times.Once);
++        }
++        finally
++        {
++            Settings.Get.Provider.Provider = previousProvider;
++        }
++    }
+ }
+diff --git a/server/RdtClient.Service/Services/DownloadClient.cs b/server/RdtClient.Service/Services/DownloadClient.cs
+index bb07570..5abd82f 100644
+--- a/server/RdtClient.Service/Services/DownloadClient.cs
++++ b/server/RdtClient.Service/Services/DownloadClient.cs
+@@ -22,6 +22,7 @@ public class DownloadClient(Download download, Torrent torrent, String destinati
+     public Int64 Speed { get; private set; }
+     public Int64 BytesTotal { get; private set; }
+     public Int64 BytesDone { get; private set; }
++    public DateTimeOffset LastProgressAt { get; private set; } = DateTimeOffset.UtcNow;
+ 
+     private Int64 LastBytesDone { get; set; }
+ 
+@@ -30,6 +31,7 @@ public class DownloadClient(Download download, Torrent torrent, String destinati
+         BytesDone = 0;
+         BytesTotal = 0;
+         Speed = 0;
++        LastProgressAt = DateTimeOffset.UtcNow;
+ 
+         try
+         {
+@@ -86,6 +88,11 @@ public class DownloadClient(Download download, Torrent torrent, String destinati
+ 
+                 var bytesAdded = BytesDone - LastBytesDone;
+ 
++                if (bytesAdded > 0 || Speed > 0)
++                {
++                    LastProgressAt = DateTimeOffset.UtcNow;
++                }
++
+                 LastBytesDone = BytesDone;
+ 
+                 AddToTotalBytesDownloadedThisSession(bytesAdded);
+diff --git a/server/RdtClient.Service/Services/TorrentRunner.cs b/server/RdtClient.Service/Services/TorrentRunner.cs
+index 85484e1..a93de25 100644
+--- a/server/RdtClient.Service/Services/TorrentRunner.cs
++++ b/server/RdtClient.Service/Services/TorrentRunner.cs
+@@ -1,4 +1,4 @@
+-﻿using System.Collections.Concurrent;
++using System.Collections.Concurrent;
+ using System.Diagnostics;
+ using System.Text.Json;
+ using Aria2NET;
+@@ -19,7 +19,8 @@ public class TorrentRunner(
+     IHttpClientFactory httpClientFactory,
+     IRateLimitCoordinator coordinator)
+ {
+-    private static readonly TimeSpan NonProgressingTorBoxSlotGrace = TimeSpan.FromMinutes(5);
++    private static readonly TimeSpan NonProgressingTorBoxSlotGrace = TimeSpan.FromMinutes(5);
++    private static readonly TimeSpan StaleStartedDownloadTimeout = TimeSpan.FromMinutes(15);
+ 
+     public static readonly ConcurrentDictionary<Guid, DownloadClient> ActiveDownloadClients = new();
+     public static readonly ConcurrentDictionary<Guid, UnpackClient> ActiveUnpackClients = new();
+@@ -310,7 +311,9 @@ public class TorrentRunner(
+ 
+                 break;
+             }
+-        }
++        }
++        await RecoverStaleDownloads(allTorrents, downloads, DateTimeOffset.UtcNow, StaleStartedDownloadTimeout);
++
+ 
+         // Process torrent retries
+         foreach (var torrent in allTorrents.Where(m => m.Retry != null))
+@@ -785,6 +788,66 @@ public class TorrentRunner(
+             SecondsRemaining = secondsRemaining
+         });
+     }
++
++    public static async Task<Int32> RecoverStaleDownloads(IEnumerable<Torrent> allTorrents, IDownloads downloads, DateTimeOffset now, TimeSpan staleTimeout)
++    {
++        var recovered = 0;
++
++        foreach (var torrent in allTorrents)
++        {
++            foreach (var download in torrent.Downloads)
++            {
++                var parentTorrent = download.Torrent ?? torrent;
++
++                if (parentTorrent.DownloadClient != Data.Enums.DownloadClient.Bezzad)
++                {
++                    continue;
++                }
++
++                if (download.DownloadStarted == null ||
++                    download.DownloadFinished != null ||
++                    download.Completed != null ||
++                    download.Error != null)
++                {
++                    continue;
++                }
++
++                var activeDownload = ActiveDownloadClients.TryGetValue(download.DownloadId, out var active) ? active : null;
++                var lastProgressAt = activeDownload?.BytesDone > 0 ? activeDownload.LastProgressAt : download.DownloadStarted.Value;
++
++                if (activeDownload?.Speed > 0 || now - lastProgressAt < staleTimeout)
++                {
++                    continue;
++                }
++
++                if (ActiveDownloadClients.TryRemove(download.DownloadId, out var removedDownload))
++                {
++                    await removedDownload.Cancel();
++                }
++
++                while (ActiveUnpackClients.TryRemove(download.DownloadId, out var unpackClient))
++                {
++                    unpackClient.Cancel();
++                }
++
++                recovered++;
++
++                if (download.RetryCount < parentTorrent.DownloadRetryAttempts)
++                {
++                    await downloads.Reset(download.DownloadId);
++                    await downloads.UpdateRetryCount(download.DownloadId, download.RetryCount + 1);
++                }
++                else
++                {
++                    await downloads.UpdateError(download.DownloadId, $"stale Bezzad download made no progress for {staleTimeout}");
++                    await downloads.UpdateCompleted(download.DownloadId, now);
++                }
++            }
++        }
++
++        return recovered;
++    }
++
+ 
+     public static Boolean CountsAgainstProviderDownloadLimit(Torrent torrent, DateTimeOffset now)
+     {
+diff --git a/server/RdtClient.Service/Services/Torrents.cs b/server/RdtClient.Service/Services/Torrents.cs
+index b0eed08..b4adcef 100644
+--- a/server/RdtClient.Service/Services/Torrents.cs
++++ b/server/RdtClient.Service/Services/Torrents.cs
+@@ -38,6 +38,8 @@ public class Torrents(
+ 
+     private static readonly SemaphoreSlim TorrentResetLock = new(1, 1);
+ 
++    private static readonly TimeSpan ProviderDeleteTimeout = TimeSpan.FromSeconds(5);
++
+     private static readonly JsonSerializerOptions JsonSerializerOptions = new()
+     {
+         ReferenceHandler = ReferenceHandler.IgnoreCycles
+@@ -509,9 +511,9 @@ public class Torrents(
+ 
+         foreach (var download in torrent.Downloads)
+         {
+-            var retry = 10;
++            var retry = 0;
+ 
+-            while (TorrentRunner.ActiveDownloadClients.TryGetValue(download.DownloadId, out var downloadClient))
++            while (TorrentRunner.ActiveDownloadClients.TryRemove(download.DownloadId, out var downloadClient))
+             {
+                 Log($"Cancelling download", download, torrent);
+ 
+@@ -527,9 +529,9 @@ public class Torrents(
+                 }
+             }
+ 
+-            retry = 10;
++            retry = 0;
+ 
+-            while (TorrentRunner.ActiveUnpackClients.TryGetValue(download.DownloadId, out var unpackClient))
++            while (TorrentRunner.ActiveUnpackClients.TryRemove(download.DownloadId, out var unpackClient))
+             {
+                 Log($"Cancelling unpack", download, torrent);
+ 
+@@ -559,7 +561,7 @@ public class Torrents(
+ 
+             try
+             {
+-                await DebridClient.Delete(torrent);
++                await DebridClient.Delete(torrent).WaitAsync(ProviderDeleteTimeout);
+             }
+             catch
+             {
+@@ -1083,7 +1085,7 @@ public class Torrents(
+                 await torrentData.UpdateRdData(torrent);
+             }
+         }
+-        catch (Exception ex)
++        catch
+         {
+             // ignored
+         }

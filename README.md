@@ -15,7 +15,8 @@ RDTClient database, logs, downloads, or live Lidarr configuration.
   private deployment.
 - `scripts/check-health.sh` verifies the private HTTP bind.
 - `docs/lidarr-wiring.md` describes the Lidarr download-client setup.
-- `docs/patched-rdtclient.md` describes the TorBox materialization patch.
+- `docs/patched-rdtclient.md` describes the private TorBox materialization and
+  slot-recovery patches.
 - `docs/rollback.md` covers safe rollback and cleanup boundaries.
 
 ## Quick Start
@@ -29,10 +30,10 @@ RDTClient database, logs, downloads, or live Lidarr configuration.
 
    To run the patched local image built from `patches/`, set:
 
-   ```sh
-   RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-   RDTCLIENT_TAG=slot-starvation-20260504
-   ```
+  ```sh
+  RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
+  RDTCLIENT_TAG=slot-recovery-20260505
+  ```
 
 3. Open RDTClient only from the host or a trusted tunnel and configure your own
    TorBox API key in RDTClient. Do not commit that key.
