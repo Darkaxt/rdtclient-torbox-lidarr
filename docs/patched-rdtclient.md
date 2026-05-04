@@ -6,12 +6,15 @@ pipeline currently uses a local image built from upstream RDTClient plus
 
 ## Patch Purpose
 
-The patch fixes two TorBox/RDTClient behaviors observed with the Bindery Hobbit
+The patch fixes three TorBox/RDTClient behaviors observed with the Bindery Hobbit
 validation run:
 
 - Provider queue starvation: old TorBox rows stuck in `queued`, `stalled`, or
   `checking` with no visible files and no transfer speed no longer occupy the
   single conservative provider slot forever.
+- TorBox torrent creation: torrent file and magnet uploads explicitly send
+  `allowZip=false` so large selective torrents are not allowed to fall back to
+  provider-side zip packaging during creation.
 - Host materialization: the internal Bezzad downloader promotes completed
   `<filename>.download` files to the final filename before RDTClient marks the
   download complete.

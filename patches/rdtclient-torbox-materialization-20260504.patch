@@ -1,3 +1,138 @@
+diff --git a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs b/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
+index abe0608..609204d 100644
+--- a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
++++ b/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
+@@ -36,6 +36,108 @@ public class TorBoxDebridClientTest
+         Settings.Get.Provider.Timeout = 100;
+     }
+ 
++    [Fact]
++    public async Task AddTorrentMagnet_DisablesTorBoxZipCreation()
++    {
++        // Arrange
++        var magnetLink = "magnet:?xt=urn:btih:testhash";
++        var torrentsApiMock = new Mock<ITorrentsApi>();
++        var userApiMock = new Mock<IUserApi>();
++
++        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object)
++        {
++            CallBase = true
++        };
++
++        var torBoxClientMock = new Mock<ITorBoxNetClient>();
++
++        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
++        torBoxClientMock.Setup(m => m.User).Returns(userApiMock.Object);
++        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
++
++        userApiMock.Setup(m => m.GetAsync(true, It.IsAny<CancellationToken>()))
++                   .ReturnsAsync(new Response<User>
++                   {
++                       Data = new()
++                       {
++                           Settings = new()
++                           {
++                               SeedTorrents = 5
++                           }
++                       }
++                   });
++
++        torrentsApiMock.Setup(m => m.AddMagnetAsync(magnetLink, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()))
++                       .ReturnsAsync(new Response<TorrentAddResult>
++                       {
++                           Data = new()
++                           {
++                               Hash = "testhash"
++                           }
++                       });
++
++        // Act
++        var hash = await clientMock.Object.AddTorrentMagnet(magnetLink);
++
++        // Assert
++        Assert.Equal("testhash", hash);
++        torrentsApiMock.Verify(m => m.AddMagnetAsync(magnetLink, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Once);
++        torrentsApiMock.Verify(m => m.AddMagnetAsync(magnetLink, 5, true, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Never);
++    }
++
++    [Fact]
++    public async Task AddTorrentFile_DisablesTorBoxZipCreation()
++    {
++        // Arrange
++        var bytes = new Byte[]
++        {
++            1, 2, 3
++        };
++
++        var torrentsApiMock = new Mock<ITorrentsApi>();
++        var userApiMock = new Mock<IUserApi>();
++
++        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object)
++        {
++            CallBase = true
++        };
++
++        var torBoxClientMock = new Mock<ITorBoxNetClient>();
++
++        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
++        torBoxClientMock.Setup(m => m.User).Returns(userApiMock.Object);
++        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
++
++        userApiMock.Setup(m => m.GetAsync(true, It.IsAny<CancellationToken>()))
++                   .ReturnsAsync(new Response<User>
++                   {
++                       Data = new()
++                       {
++                           Settings = new()
++                           {
++                               SeedTorrents = 5
++                           }
++                       }
++                   });
++
++        torrentsApiMock.Setup(m => m.AddFileAsync(bytes, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()))
++                       .ReturnsAsync(new Response<TorrentAddResult>
++                       {
++                           Data = new()
++                           {
++                               Hash = "testhash"
++                           }
++                       });
++
++        // Act
++        var hash = await clientMock.Object.AddTorrentFile(bytes);
++
++        // Assert
++        Assert.Equal("testhash", hash);
++        torrentsApiMock.Verify(m => m.AddFileAsync(bytes, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Once);
++        torrentsApiMock.Verify(m => m.AddFileAsync(bytes, 5, true, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Never);
++    }
++
+     [Fact]
+     public async Task GetDownloads_ReturnsTorrentsAndNzbsWithCorrectType()
+     {
+diff --git a/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs b/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
+index 47aad2a..181c7a7 100644
+--- a/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
++++ b/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
+@@ -69,7 +69,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
+         return await HandleAddTorrentErrors(async asQueued =>
+         {
+             var user = await GetClient().User.GetAsync(true);
+-            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddMagnetAsync(magnetLink, user.Data?.Settings?.SeedTorrents ?? 3, as_queued: asQueued);
++            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddMagnetAsync(magnetLink, user.Data?.Settings?.SeedTorrents ?? 3, false, as_queued: asQueued);
+ 
+             return result.Data!.Hash!;
+         });
+@@ -80,7 +80,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
+         return await HandleAddTorrentErrors(async asQueued =>
+         {
+             var user = await GetClient().User.GetAsync(true);
+-            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddFileAsync(bytes, user.Data?.Settings?.SeedTorrents ?? 3, as_queued: asQueued);
++            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddFileAsync(bytes, user.Data?.Settings?.SeedTorrents ?? 3, false, as_queued: asQueued);
+ 
+             return result.Data!.Hash!;
+         });
 diff --git a/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs b/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
 index 41bbe7d..973dae7 100644
 --- a/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
@@ -143,225 +278,3 @@ index bb9da16..85484e1 100644
      private void Log(String message, Download? download, Torrent? torrent)
      {
          if (download != null)
-diff --git a/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs b/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs
-new file mode 100644
-index 0000000..0f2ed66
---- /dev/null
-+++ b/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs
-@@ -0,0 +1,53 @@
-+using RdtClient.Service.Services.Downloaders;
-+
-+namespace RdtClient.Service.Test.Services.Downloaders;
-+
-+public class BezzadDownloaderTest
-+{
-+    [Fact]
-+    public void FinalizeCompletedDownload_RenamesDownloaderTempFile()
-+    {
-+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-+        Directory.CreateDirectory(directory);
-+
-+        try
-+        {
-+            var finalPath = Path.Combine(directory, "book.epub");
-+            var tempPath = $"{finalPath}.download";
-+
-+            File.WriteAllText(tempPath, "content");
-+
-+            var error = BezzadDownloader.FinalizeCompletedDownload(finalPath);
-+
-+            Assert.Null(error);
-+            Assert.True(File.Exists(finalPath));
-+            Assert.False(File.Exists(tempPath));
-+            Assert.Equal("content", File.ReadAllText(finalPath));
-+        }
-+        finally
-+        {
-+            Directory.Delete(directory, true);
-+        }
-+    }
-+
-+    [Fact]
-+    public void FinalizeCompletedDownload_LeavesExistingFinalFileUntouched()
-+    {
-+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-+        Directory.CreateDirectory(directory);
-+
-+        try
-+        {
-+            var finalPath = Path.Combine(directory, "book.epub");
-+            var tempPath = $"{finalPath}.download";
-+
-+            File.WriteAllText(finalPath, "final");
-+            File.WriteAllText(tempPath, "temp");
-+
-+            var error = BezzadDownloader.FinalizeCompletedDownload(finalPath);
-+
-+            Assert.Null(error);
-+            Assert.Equal("final", File.ReadAllText(finalPath));
-+            Assert.True(File.Exists(tempPath));
-+        }
-+        finally
-+        {
-+            Directory.Delete(directory, true);
-+        }
-+    }
-+}
-diff --git a/server/RdtClient.Service.Test/Services/TorrentRunnerTest.cs b/server/RdtClient.Service.Test/Services/TorrentRunnerTest.cs
-new file mode 100644
-index 0000000..3ff4e20
---- /dev/null
-+++ b/server/RdtClient.Service.Test/Services/TorrentRunnerTest.cs
-@@ -0,0 +1,135 @@
-+using RdtClient.Data.Enums;
-+using RdtClient.Data.Models.Data;
-+using RdtClient.Service.Services;
-+
-+namespace RdtClient.Service.Test.Services;
-+
-+public class TorrentRunnerTest
-+{
-+    [Fact]
-+    public void CountsAgainstProviderDownloadLimit_IgnoresOldTorBoxStalledWithoutDownloads()
-+    {
-+        var now = DateTimeOffset.UtcNow;
-+        var previousProvider = Settings.Get.Provider.Provider;
-+
-+        try
-+        {
-+            Settings.Get.Provider.Provider = Provider.TorBox;
-+
-+            var torrent = new Torrent
-+            {
-+                Added = now.AddMinutes(-10),
-+                RdStatus = TorrentStatus.Downloading,
-+                RdStatusRaw = "stalled (no seeds)",
-+                RdSpeed = 0
-+            };
-+
-+            Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
-+        }
-+        finally
-+        {
-+            Settings.Get.Provider.Provider = previousProvider;
-+        }
-+    }
-+
-+    [Fact]
-+    public void CountsAgainstProviderDownloadLimit_KeepsFreshTorBoxStalledAsActive()
-+    {
-+        var now = DateTimeOffset.UtcNow;
-+        var previousProvider = Settings.Get.Provider.Provider;
-+
-+        try
-+        {
-+            Settings.Get.Provider.Provider = Provider.TorBox;
-+
-+            var torrent = new Torrent
-+            {
-+                Added = now.AddMinutes(-1),
-+                RdStatus = TorrentStatus.Downloading,
-+                RdStatusRaw = "stalled (no seeds)",
-+                RdSpeed = 0
-+            };
-+
-+            Assert.True(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
-+        }
-+        finally
-+        {
-+            Settings.Get.Provider.Provider = previousProvider;
-+        }
-+    }
-+
-+    [Fact]
-+    public void CountsAgainstProviderDownloadLimit_IgnoresOldTorBoxProviderQueuedWithoutDownloads()
-+    {
-+        var now = DateTimeOffset.UtcNow;
-+        var previousProvider = Settings.Get.Provider.Provider;
-+
-+        try
-+        {
-+            Settings.Get.Provider.Provider = Provider.TorBox;
-+
-+            var torrent = new Torrent
-+            {
-+                Added = now.AddMinutes(-20),
-+                RdAdded = now.AddMinutes(-10),
-+                RdStatus = TorrentStatus.Processing,
-+                RdStatusRaw = "queued",
-+                RdSpeed = 0
-+            };
-+
-+            Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
-+        }
-+        finally
-+        {
-+            Settings.Get.Provider.Provider = previousProvider;
-+        }
-+    }
-+
-+    [Fact]
-+    public void CountsAgainstProviderDownloadLimit_KeepsFreshTorBoxProviderQueuedAsActive()
-+    {
-+        var now = DateTimeOffset.UtcNow;
-+        var previousProvider = Settings.Get.Provider.Provider;
-+
-+        try
-+        {
-+            Settings.Get.Provider.Provider = Provider.TorBox;
-+
-+            var torrent = new Torrent
-+            {
-+                Added = now.AddMinutes(-20),
-+                RdAdded = now.AddMinutes(-1),
-+                RdStatus = TorrentStatus.Processing,
-+                RdStatusRaw = "queued",
-+                RdSpeed = 0
-+            };
-+
-+            Assert.True(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
-+        }
-+        finally
-+        {
-+            Settings.Get.Provider.Provider = previousProvider;
-+        }
-+    }
-+
-+    [Fact]
-+    public void CountsAgainstProviderDownloadLimit_KeepsActiveTorBoxDownloadWithHostDownloads()
-+    {
-+        var now = DateTimeOffset.UtcNow;
-+        var previousProvider = Settings.Get.Provider.Provider;
-+
-+        try
-+        {
-+            Settings.Get.Provider.Provider = Provider.TorBox;
-+
-+            var torrent = new Torrent
-+            {
-+                Added = now.AddMinutes(-10),
-+                RdStatus = TorrentStatus.Downloading,
-+                RdStatusRaw = "stalled (no seeds)",
-+                Downloads =
-+                [
-+                    new()
-+                ]
-+            };
-+
-+            Assert.True(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
-+        }
-+        finally
-+        {
-+            Settings.Get.Provider.Provider = previousProvider;
-+        }
-+    }
-+
-+    [Fact]
-+    public void CountsAgainstProviderDownloadLimit_DoesNotCountQueuedOrFinished()
-+    {
-+        var now = DateTimeOffset.UtcNow;
-+
-+        Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(new() { RdStatus = TorrentStatus.Queued }, now));
-+        Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(new() { RdStatus = TorrentStatus.Finished }, now));
-+    }
-+}
