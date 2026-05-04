@@ -1,3 +1,88 @@
+diff --git a/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs b/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs
+new file mode 100644
+index 0000000..026d6c7
+--- /dev/null
++++ b/server/RdtClient.Service.Test/Services/Downloaders/BezzadDownloaderTest.cs
+@@ -0,0 +1,79 @@
++using RdtClient.Service.Services.Downloaders;
++
++namespace RdtClient.Service.Test.Services.Downloaders;
++
++public class BezzadDownloaderTest
++{
++    [Fact]
++    public void FinalizeCompletedDownload_ReturnsSuccess_WhenFinalFileExists()
++    {
++        var dir = CreateTempDirectory();
++        var filePath = Path.Combine(dir, "book.epub");
++
++        try
++        {
++            File.WriteAllText(filePath, "complete");
++
++            var error = BezzadDownloader.FinalizeCompletedDownload(filePath, TimeSpan.Zero, TimeSpan.Zero);
++
++            Assert.Null(error);
++            Assert.True(File.Exists(filePath));
++        }
++        finally
++        {
++            Directory.Delete(dir, true);
++        }
++    }
++
++    [Fact]
++    public void FinalizeCompletedDownload_PromotesTemporaryFile_WhenOnlyDownloadFileExists()
++    {
++        var dir = CreateTempDirectory();
++        var filePath = Path.Combine(dir, "book.epub");
++        var tempPath = $"{filePath}.download";
++
++        try
++        {
++            File.WriteAllText(tempPath, "complete");
++
++            var error = BezzadDownloader.FinalizeCompletedDownload(filePath, TimeSpan.Zero, TimeSpan.Zero);
++
++            Assert.Null(error);
++            Assert.True(File.Exists(filePath));
++            Assert.False(File.Exists(tempPath));
++            Assert.Equal("complete", File.ReadAllText(filePath));
++        }
++        finally
++        {
++            Directory.Delete(dir, true);
++        }
++    }
++
++    [Fact]
++    public void FinalizeCompletedDownload_ReturnsError_WhenNoOutputFileExists()
++    {
++        var dir = CreateTempDirectory();
++        var filePath = Path.Combine(dir, "book.epub");
++
++        try
++        {
++            var error = BezzadDownloader.FinalizeCompletedDownload(filePath, TimeSpan.Zero, TimeSpan.Zero);
++
++            Assert.NotNull(error);
++            Assert.Contains("neither final file nor temporary file exists", error);
++            Assert.False(File.Exists(filePath));
++        }
++        finally
++        {
++            Directory.Delete(dir, true);
++        }
++    }
++
++    private static String CreateTempDirectory()
++    {
++        var dir = Path.Combine(Path.GetTempPath(), $"rdt-bezzad-{Guid.NewGuid():N}");
++        Directory.CreateDirectory(dir);
++
++        return dir;
++    }
++}
 diff --git a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs b/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
 index abe0608..609204d 100644
 --- a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
@@ -134,7 +219,7 @@ index 47aad2a..181c7a7 100644
              return result.Data!.Hash!;
          });
 diff --git a/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs b/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
-index 41bbe7d..973dae7 100644
+index 41bbe7d..d702c18 100644
 --- a/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
 +++ b/server/RdtClient.Service/Services/Downloaders/BezzadDownloader.cs
 @@ -83,6 +83,10 @@ public class BezzadDownloader : IDownloader
@@ -148,40 +233,56 @@ index 41bbe7d..973dae7 100644
  
              DownloadComplete?.Invoke(this,
                                       new()
-@@ -136,6 +140,39 @@ public class BezzadDownloader : IDownloader
+@@ -136,6 +140,55 @@ public class BezzadDownloader : IDownloader
          return Task.CompletedTask;
      }
  
-+    public static String? FinalizeCompletedDownload(String filePath)
++    public static String? FinalizeCompletedDownload(String filePath, TimeSpan? waitTimeout = null, TimeSpan? retryDelay = null)
 +    {
-+        if (File.Exists(filePath))
-+        {
-+            return null;
-+        }
-+
++        var timeout = waitTimeout ?? TimeSpan.FromSeconds(10);
++        var delay = retryDelay ?? TimeSpan.FromMilliseconds(250);
 +        var tempPath = $"{filePath}.download";
++        var deadline = DateTimeOffset.UtcNow.Add(timeout);
 +
-+        if (!File.Exists(tempPath))
++        while (true)
 +        {
-+            return null;
-+        }
-+
-+        try
-+        {
-+            var directory = Path.GetDirectoryName(filePath);
-+
-+            if (!String.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
++            if (File.Exists(filePath))
 +            {
-+                Directory.CreateDirectory(directory);
++                return null;
 +            }
 +
-+            File.Move(tempPath, filePath);
++            if (File.Exists(tempPath))
++            {
++                try
++                {
++                    var directory = Path.GetDirectoryName(filePath);
 +
-+            return null;
-+        }
-+        catch (Exception ex)
-+        {
-+            return $"Download completed but failed to finalize {tempPath}: {ex.Message}";
++                    if (!String.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
++                    {
++                        Directory.CreateDirectory(directory);
++                    }
++
++                    File.Move(tempPath, filePath);
++
++                    return null;
++                }
++                catch (Exception ex)
++                {
++                    if (File.Exists(filePath))
++                    {
++                        return null;
++                    }
++
++                    return $"Download completed but failed to finalize {tempPath}: {ex.Message}";
++                }
++            }
++
++            if (timeout <= TimeSpan.Zero || DateTimeOffset.UtcNow >= deadline)
++            {
++                return $"Download completed but neither final file nor temporary file exists: {filePath}";
++            }
++
++            Thread.Sleep(delay);
 +        }
 +    }
 +
