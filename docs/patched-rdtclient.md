@@ -6,6 +6,7 @@ these wrapper patches, applied in order:
 
 1. `patches/rdtclient-torbox-materialization-20260504.patch`
 2. `patches/rdtclient-slot-recovery-20260505.patch`
+3. `patches/rdtclient-torbox-delete-control-id-20260505.patch`
 
 ## Patch Purpose
 
@@ -25,6 +26,15 @@ validation run:
   clients before provider cleanup, TorBox remote deletion is best-effort, and
   stale started Bezzad downloads are reset or failed so the single download slot
   is not held forever.
+- TorBox remote cleanup: RDTClient stores TorBox torrent hashes as `RdId`, but
+  TorBox delete/control calls require the numeric torrent id, so delete now
+  resolves the numeric id from the hash, the current list, or the queued list
+  before calling `control=delete`.
+- qBittorrent completion signal: RDTClient no longer reports a TorBox torrent as
+  qB-complete just because local RDT state has a completion timestamp or because
+  the provider reached 100% before local file materialization. qB `progress=1`,
+  `pausedUP`, file progress, and `completion_on` are now reserved for successful
+  local materialization, or for explicit `DownloadNone` torrents.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -39,15 +49,16 @@ cd rdt-client
 git checkout f5ea1e0
 git apply ../patches/rdtclient-torbox-materialization-20260504.patch
 git apply ../patches/rdtclient-slot-recovery-20260505.patch
+git apply ../patches/rdtclient-torbox-delete-control-id-20260505.patch
 docker build --platform linux/arm64/v8 \
-  -t rdtclient-torbox-lidarr:slot-recovery-20260505 .
+  -t rdtclient-torbox-lidarr:torbox-complete-signal-20260505b .
 ```
 
 Then configure this wrapper:
 
 ```sh
 RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-RDTCLIENT_TAG=slot-recovery-20260505
+RDTCLIENT_TAG=torbox-complete-signal-20260505b
 docker compose up -d
 ```
 
@@ -55,8 +66,12 @@ docker compose up -d
 
 The deployed image was built on the Oracle arm64 host. Build-time tests passed:
 
-- `RdtClient.Service.Test`: 174 passed
+- `RdtClient.Service.Test`: 181 passed in the deployed patch-stack image build
 - `RdtClient.Web.Test`: 24 passed
+- `TorBoxDebridClientTest.Delete_CallsTorrentsControl_WhenTypeIsTorrent`: proves
+  torrent delete resolves and uses TorBox's numeric control id.
+- `QBittorrentTest.TorrentInfo_ShouldNotReportComplete_WhenProviderFinishedButNoLocalDownloadsExist`:
+  proves provider-only completion is not exposed to Bindery as qB completion.
 
 Focused test filter before the full build:
 

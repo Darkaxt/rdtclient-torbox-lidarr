@@ -1,0 +1,477 @@
+diff --git a/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs b/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
+index 181c7a7..898f66d 100644
+--- a/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
++++ b/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
+@@ -1,4 +1,5 @@
+ using System.Diagnostics;
++using System.Globalization;
+ using Microsoft.Extensions.Logging;
+ using Newtonsoft.Json;
+ using RdtClient.Data.Enums;
+@@ -156,7 +157,8 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
+             }
+             else
+             {
+-                await GetClient().Torrents.ControlAsync(torrent.RdId, "delete");
++                var controlId = await ResolveTorrentControlId(torrent);
++                await GetClient().Torrents.ControlAsync(controlId, "delete");
+             }
+         });
+     }
+@@ -437,6 +439,62 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
+         return await HandleErrors(() => GetClient().Usenet.GetAvailabilityAsync(hash, true));
+     }
+ 
++    private async Task<String> ResolveTorrentControlId(Torrent torrent)
++    {
++        if (!String.IsNullOrWhiteSpace(torrent.RdId) && Int32.TryParse(torrent.RdId, NumberStyles.None, CultureInfo.InvariantCulture, out _))
++        {
++            return torrent.RdId;
++        }
++
++        if (!String.IsNullOrWhiteSpace(torrent.Hash))
++        {
++            try
++            {
++                var torBoxTorrent = await HandleErrors(() => GetClient().Torrents.GetHashInfoAsync(torrent.Hash, true));
++
++                if (torBoxTorrent is { Id: > 0 })
++                {
++                    return torBoxTorrent.Id.ToString(CultureInfo.InvariantCulture);
++                }
++            }
++            catch (Exception ex)
++            {
++                logger.LogWarning(ex, "Could not resolve TorBox control id for torrent hash {TorrentHash}; falling back to RdId", torrent.Hash);
++            }
++
++            var currentId = await ResolveTorrentControlIdFromList(torrent.Hash, () => GetClient().Torrents.GetCurrentAsync(true));
++            if (currentId != null)
++            {
++                return currentId;
++            }
++
++            var queuedId = await ResolveTorrentControlIdFromList(torrent.Hash, () => GetClient().Torrents.GetQueuedAsync(true));
++            if (queuedId != null)
++            {
++                return queuedId;
++            }
++        }
++
++        return torrent.RdId!;
++    }
++
++    private async Task<String?> ResolveTorrentControlIdFromList(String hash, Func<Task<List<TorrentInfoResult>?>> getTorrents)
++    {
++        try
++        {
++            var torBoxTorrent = (await HandleErrors(getTorrents) ?? [])
++                .FirstOrDefault(torrent => hash.Equals(torrent.Hash, StringComparison.OrdinalIgnoreCase) && torrent.Id > 0);
++
++            return torBoxTorrent?.Id.ToString(CultureInfo.InvariantCulture);
++        }
++        catch (Exception ex)
++        {
++            logger.LogWarning(ex, "Could not resolve TorBox control id from torrent list for hash {TorrentHash}", hash);
++
++            return null;
++        }
++    }
++
+     private DebridClientTorrent Map(TorrentInfoResult torrent)
+     {
+         return new()
+diff --git a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs b/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
+index 609204d..35e52a7 100644
+--- a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
++++ b/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
+@@ -305,6 +305,39 @@ public class TorBoxDebridClientTest
+         // Arrange
+         var torrent = new Torrent
+         {
++            Hash = "torrent-hash",
++            RdId = "torrent-hash",
++            Type = DownloadType.Torrent
++        };
++
++        var torrentsApiMock = new Mock<ITorrentsApi>();
++        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
++        var torBoxClientMock = new Mock<ITorBoxNetClient>();
++
++        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
++        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
++
++        torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
++                       .ReturnsAsync(new TorrentInfoResult
++                       {
++                           Id = 12345
++                       });
++
++        // Act
++        await clientMock.Object.Delete(torrent);
++
++        // Assert
++        torrentsApiMock.Verify(m => m.ControlAsync("12345", "delete", It.IsAny<CancellationToken>()), Times.Once);
++        torrentsApiMock.Verify(m => m.ControlAsync("torrent-hash", "delete", It.IsAny<CancellationToken>()), Times.Never);
++    }
++
++    [Fact]
++    public async Task Delete_FallsBackToRdId_WhenTorrentControlIdCannotBeResolved()
++    {
++        // Arrange
++        var torrent = new Torrent
++        {
++            Hash = "torrent-hash",
+             RdId = "torrent-id",
+             Type = DownloadType.Torrent
+         };
+@@ -316,6 +349,9 @@ public class TorBoxDebridClientTest
+         torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+         clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+ 
++        torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
++                       .ReturnsAsync((TorrentInfoResult?)null);
++
+         // Act
+         await clientMock.Object.Delete(torrent);
+ 
+@@ -323,6 +359,49 @@ public class TorBoxDebridClientTest
+         torrentsApiMock.Verify(m => m.ControlAsync("torrent-id", "delete", It.IsAny<CancellationToken>()), Times.Once);
+     }
+ 
++    [Fact]
++    public async Task Delete_ResolvesControlIdFromCurrentList_WhenHashInfoHasNoActiveId()
++    {
++        // Arrange
++        var torrent = new Torrent
++        {
++            Hash = "torrent-hash",
++            RdId = "torrent-hash",
++            Type = DownloadType.Torrent
++        };
++
++        var torrentsApiMock = new Mock<ITorrentsApi>();
++        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
++        var torBoxClientMock = new Mock<ITorBoxNetClient>();
++
++        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
++        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
++
++        torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
++                       .ReturnsAsync(new TorrentInfoResult
++                       {
++                           Id = 0,
++                           Hash = "torrent-hash"
++                       });
++
++        torrentsApiMock.Setup(m => m.GetCurrentAsync(true, It.IsAny<CancellationToken>()))
++                       .ReturnsAsync(new List<TorrentInfoResult>
++                       {
++                           new()
++                           {
++                               Id = 67890,
++                               Hash = "torrent-hash"
++                           }
++                       });
++
++        // Act
++        await clientMock.Object.Delete(torrent);
++
++        // Assert
++        torrentsApiMock.Verify(m => m.ControlAsync("67890", "delete", It.IsAny<CancellationToken>()), Times.Once);
++        torrentsApiMock.Verify(m => m.ControlAsync("torrent-hash", "delete", It.IsAny<CancellationToken>()), Times.Never);
++    }
++
+     [Fact]
+     public async Task Delete_CallsUsenetControl_WhenTypeIsNzb()
+     {
+diff --git a/server/RdtClient.Service/Services/QBittorrent.cs b/server/RdtClient.Service/Services/QBittorrent.cs
+index a69b6a6..9f96129 100644
+--- a/server/RdtClient.Service/Services/QBittorrent.cs
++++ b/server/RdtClient.Service/Services/QBittorrent.cs
+@@ -221,36 +221,40 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+             var rdProgress = Math.Clamp(torrent.RdProgress ?? 0.0, 0.0, 100.0) / 100.0;
+             var bytesTotal = torrent.RdSize ?? 0;
+             var speed = torrent.RdSpeed ?? 0;
+-            var bytesDone = (Int64)(bytesTotal * rdProgress);
++            Double? downloadProgress = null;
+ 
+-            Double progress;
+-
+-            if (torrent.Completed != null)
+-            {
+-                progress = 1.0;
+-            }
+-            else if (torrent.Downloads is { Count: > 0 })
++            if (torrent.Downloads is { Count: > 0 })
+             {
+                 var dlStats = torrent.Downloads.Select(m => torrents.GetDownloadStats(m.DownloadId)).ToList();
+                 var dlBytesDone = dlStats.Sum(m => m.BytesDone);
+                 var dlBytesTotal = dlStats.Sum(m => m.BytesTotal);
+                 speed = (Int32)(dlStats.Any() ? dlStats.Average(m => m.Speed) : 0);
+-                var downloadProgress = dlBytesTotal > 0 ? Math.Clamp((Double)dlBytesDone / dlBytesTotal, 0.0, 1.0) : 0;
++                downloadProgress = dlBytesTotal > 0 ? Math.Clamp((Double)dlBytesDone / dlBytesTotal, 0.0, 1.0) : 0;
++            }
+ 
+-                if (rdProgress >= 1.0 && downloadProgress >= 1.0)
+-                {
+-                    progress = 1.0;
+-                }
+-                else
+-                {
+-                    progress = (rdProgress + downloadProgress) / 2.0;
+-                }
++            var completedSuccessfully = CompletedSuccessfully(torrent, rdProgress, downloadProgress);
++
++            Double progress;
++
++            if (completedSuccessfully)
++            {
++                progress = 1.0;
++            }
++            else if (downloadProgress.HasValue)
++            {
++                progress = (rdProgress + downloadProgress.Value) / 2.0;
+             }
+             else
+             {
+                 progress = rdProgress;
+             }
+ 
++            if (!completedSuccessfully && progress >= 1.0)
++            {
++                progress = 0.999;
++            }
++
++            var bytesDone = (Int64)(bytesTotal * progress);
+             var remaining = TimeSpan.Zero;
+ 
+             if (progress > 0 && progress < 1.0)
+@@ -269,7 +273,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+                 Availability = 2,
+                 Category = torrent.Category ?? "",
+                 Completed = bytesDone,
+-                CompletionOn = torrent.Completed?.ToUnixTimeSeconds(),
++                CompletionOn = completedSuccessfully ? torrent.Completed?.ToUnixTimeSeconds() : null,
+                 ContentPath = torrentPath,
+                 DlLimit = -1,
+                 Dlspeed = speed,
+@@ -313,7 +317,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+             {
+                 result.State = "error";
+             }
+-            else if (torrent.Completed.HasValue)
++            else if (completedSuccessfully)
+             {
+                 result.State = "pausedUP";
+             }
+@@ -328,6 +332,38 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+         return results;
+     }
+ 
++    private static Boolean CompletedSuccessfully(Torrent torrent, Double rdProgress, Double? downloadProgress)
++    {
++        if (!String.IsNullOrWhiteSpace(torrent.Error))
++        {
++            return false;
++        }
++
++        if (torrent.Downloads.Count > 0)
++        {
++            var allDownloadsCompleted = torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
++
++            return allDownloadsCompleted || (rdProgress >= 1.0 && downloadProgress >= 1.0);
++        }
++
++        return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;
++    }
++
++    private static Boolean SelectedFilesAreMaterialized(Torrent torrent)
++    {
++        if (!String.IsNullOrWhiteSpace(torrent.Error))
++        {
++            return false;
++        }
++
++        if (torrent.Downloads.Count > 0)
++        {
++            return torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
++        }
++
++        return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;
++    }
++
+     public async Task<IList<TorrentFileItem>?> TorrentFileContents(String hash)
+     {
+         var torrent = await torrents.GetByHash(hash);
+@@ -337,7 +373,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+             return null;
+         }
+ 
+-        var progress = torrent.Completed.HasValue || torrent.RdStatus == TorrentStatus.Finished ? 1f : 0f;
++        var progress = SelectedFilesAreMaterialized(torrent) ? 1f : 0f;
+ 
+         return torrent.Files
+             .Select((file, index) => new TorrentFileItem
+diff --git a/server/RdtClient.Service.Test/Services/QBittorrentTest.cs b/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
+index 6e74451..77f45e8 100644
+--- a/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
++++ b/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
+@@ -97,6 +97,48 @@ public class QBittorrentTest
+         Assert.Equal(1.0f, result[0].Progress);
+     }
+ 
++    [Fact]
++    public async Task TorrentInfo_ShouldReportComplete_WhenAllDownloadsHaveCompletedTimestamps()
++    {
++        // Arrange
++        var downloadId = Guid.NewGuid();
++        var torrentId = Guid.NewGuid();
++
++        var allTorrents = new List<Torrent>
++        {
++            new()
++            {
++                TorrentId = torrentId,
++                Hash = "hash1",
++                RdName = "Torrent 1",
++                RdProgress = 100,
++                Completed = DateTimeOffset.UtcNow,
++                Type = DownloadType.Torrent,
++                Downloads = new List<Download>
++                {
++                    new()
++                    {
++                        DownloadId = downloadId,
++                        TorrentId = torrentId,
++                        Completed = DateTimeOffset.UtcNow,
++                        DownloadFinished = DateTimeOffset.UtcNow
++                    }
++                }
++            }
++        };
++
++        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
++
++        // Act
++        var result = await _qBittorrent.TorrentInfo();
++
++        // Assert
++        Assert.Single(result);
++        Assert.Equal(1.0f, result[0].Progress);
++        Assert.Equal("pausedUP", result[0].State);
++        Assert.NotNull(result[0].CompletionOn);
++    }
++
+     [Fact]
+     public async Task TorrentInfo_ShouldReport90Percent_WhenRDIs100AndLocalIs80()
+     {
+@@ -139,6 +181,68 @@ public class QBittorrentTest
+         Assert.Equal(0.9f, result[0].Progress);
+     }
+ 
++    [Fact]
++    public async Task TorrentInfo_ShouldNotReportComplete_WhenCompletionTimestampIsNotSuccessfulMaterialization()
++    {
++        // Arrange
++        var allTorrents = new List<Torrent>
++        {
++            new()
++            {
++                TorrentId = Guid.NewGuid(),
++                Hash = "hash1",
++                RdName = "Torrent 1",
++                RdProgress = 0,
++                RdSize = 1000,
++                RdStatus = TorrentStatus.Downloading,
++                Completed = DateTimeOffset.UtcNow,
++                Type = DownloadType.Torrent
++            }
++        };
++
++        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
++
++        // Act
++        var result = await _qBittorrent.TorrentInfo();
++
++        // Assert
++        Assert.Single(result);
++        Assert.NotEqual(1.0f, result[0].Progress);
++        Assert.NotEqual("pausedUP", result[0].State);
++        Assert.Null(result[0].CompletionOn);
++    }
++
++    [Fact]
++    public async Task TorrentInfo_ShouldNotReportComplete_WhenProviderFinishedButNoLocalDownloadsExist()
++    {
++        // Arrange
++        var allTorrents = new List<Torrent>
++        {
++            new()
++            {
++                TorrentId = Guid.NewGuid(),
++                Hash = "hash1",
++                RdName = "Torrent 1",
++                RdProgress = 100,
++                RdSize = 1000,
++                RdStatus = TorrentStatus.Finished,
++                HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
++                Type = DownloadType.Torrent
++            }
++        };
++
++        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
++
++        // Act
++        var result = await _qBittorrent.TorrentInfo();
++
++        // Assert
++        Assert.Single(result);
++        Assert.True(result[0].Progress < 1.0f);
++        Assert.NotEqual("pausedUP", result[0].State);
++        Assert.Null(result[0].CompletionOn);
++    }
++
+     [Fact]
+     public async Task TorrentFileContents_ShouldReturnAllFiles_WithIndexesAndPriority()
+     {
+@@ -188,6 +292,38 @@ public class QBittorrentTest
+             });
+     }
+ 
++    [Fact]
++    public async Task TorrentFileContents_ShouldNotReportSelectedFilesComplete_WhenProviderFinishedButNoLocalDownloadsExist()
++    {
++        // Arrange
++        var torrent = new Torrent
++        {
++            Hash = "hash1",
++            Type = DownloadType.Torrent,
++            RdStatus = TorrentStatus.Finished,
++            HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
++            RdFiles = JsonSerializer.Serialize(new List<DebridClientFile>
++            {
++                new()
++                {
++                    Id = 1,
++                    Path = "book.epub",
++                    Bytes = 1000,
++                    Selected = true
++                }
++            })
++        };
++
++        _torrentsMock.Setup(m => m.GetByHash("hash1")).ReturnsAsync(torrent);
++
++        // Act
++        var result = await _qBittorrent.TorrentFileContents("hash1");
++
++        // Assert
++        Assert.NotNull(result);
++        Assert.Equal(0f, result![0].Progress);
++    }
++
+     [Fact]
+     public async Task TorrentProperties_ShouldExposePublicTorrentFlag()
+     {
+
