@@ -7,6 +7,7 @@ these wrapper patches, applied in order:
 1. `patches/rdtclient-torbox-materialization-20260504.patch`
 2. `patches/rdtclient-slot-recovery-20260505.patch`
 3. `patches/rdtclient-torbox-delete-control-id-20260505.patch`
+4. `patches/rdtclient-requeue-missing-materialized-files-20260505.patch`
 
 ## Patch Purpose
 
@@ -35,6 +36,10 @@ validation run:
   the provider reached 100% before local file materialization. qB `progress=1`,
   `pausedUP`, file progress, and `completion_on` are now reserved for successful
   local materialization, or for explicit `DownloadNone` torrents.
+- Stale completed re-adds: when the same torrent hash is added again and RDT has
+  completed download rows but the local materialized files are missing, RDT resets
+  those child downloads and clears torrent completion so the qB-compatible path
+  materializes the files again instead of returning a stale complete row.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -50,15 +55,16 @@ git checkout f5ea1e0
 git apply ../patches/rdtclient-torbox-materialization-20260504.patch
 git apply ../patches/rdtclient-slot-recovery-20260505.patch
 git apply ../patches/rdtclient-torbox-delete-control-id-20260505.patch
+git apply ../patches/rdtclient-requeue-missing-materialized-files-20260505.patch
 docker build --platform linux/arm64/v8 \
-  -t rdtclient-torbox-lidarr:torbox-stale-child-recovery-20260505 .
+  -t rdtclient-torbox-lidarr:torbox-requeue-missing-files-20260505 .
 ```
 
 Then configure this wrapper:
 
 ```sh
 RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-RDTCLIENT_TAG=torbox-stale-child-recovery-20260505
+RDTCLIENT_TAG=torbox-requeue-missing-files-20260505
 docker compose up -d
 ```
 
@@ -74,10 +80,12 @@ The deployed image was built on the Oracle arm64 host. Build-time tests passed:
   torrent delete resolves and uses TorBox's numeric control id.
 - `QBittorrentTest.TorrentInfo_ShouldNotReportComplete_WhenProviderFinishedButNoLocalDownloadsExist`:
   proves provider-only completion is not exposed to Bindery as qB completion.
+- `TorrentsTest.AddMagnetToDebridQueue_WhenExistingCompletedTorrentHasNoLocalFiles_ShouldResetItForMaterialization`:
+  proves a stale completed hash is requeued when its materialized files are gone.
 
 Focused test filter before the full build:
 
 ```sh
 dotnet test RdtClient.Service.Test/RdtClient.Service.Test.csproj \
-  --filter "FullyQualifiedName~TorrentRunnerSlotRecoveryTest|FullyQualifiedName~Delete_WhenDownloadIsActive_RemovesActiveDownloadBeforeDeletingData|FullyQualifiedName~Delete_WhenTorBoxRemoteDeleteFails_StillDeletesLocalData|FullyQualifiedName~TorrentRunnerTest|FullyQualifiedName~TorBoxDebridClientTest|FullyQualifiedName~BezzadDownloaderTest"
+  --filter "FullyQualifiedName~TorrentRunnerSlotRecoveryTest|FullyQualifiedName~AddMagnetToDebridQueue_WhenExistingCompletedTorrentHasNoLocalFiles_ShouldResetItForMaterialization|FullyQualifiedName~Delete_WhenDownloadIsActive_RemovesActiveDownloadBeforeDeletingData|FullyQualifiedName~Delete_WhenTorBoxRemoteDeleteFails_StillDeletesLocalData|FullyQualifiedName~TorrentRunnerTest|FullyQualifiedName~TorBoxDebridClientTest|FullyQualifiedName~BezzadDownloaderTest"
 ```
