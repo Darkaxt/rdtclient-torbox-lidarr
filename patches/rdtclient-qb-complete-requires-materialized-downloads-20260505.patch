@@ -1,0 +1,76 @@
+diff --git a/server/RdtClient.Service.Test/Services/QBittorrentTest.cs b/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
+index 77f45e8..47511d2 100644
+--- a/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
++++ b/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
+@@ -78,7 +78,9 @@ public class QBittorrentTest
+                     new()
+                     {
+                         DownloadId = downloadId,
+-                        TorrentId = torrentId
++                        TorrentId = torrentId,
++                        Completed = DateTimeOffset.UtcNow,
++                        DownloadFinished = DateTimeOffset.UtcNow
+                     }
+                 }
+             }
+@@ -97,6 +99,47 @@ public class QBittorrentTest
+         Assert.Equal(1.0f, result[0].Progress);
+     }
+ 
++    [Fact]
++    public async Task TorrentInfo_ShouldNotReportComplete_WhenLocalBytesAreFullButChildDownloadsAreNotCompleted()
++    {
++        // Arrange
++        var downloadId = Guid.NewGuid();
++        var torrentId = Guid.NewGuid();
++
++        var allTorrents = new List<Torrent>
++        {
++            new()
++            {
++                TorrentId = torrentId,
++                Hash = "hash1",
++                RdName = "Torrent 1",
++                RdProgress = 100,
++                RdSize = 1000,
++                Type = DownloadType.Torrent,
++                Downloads = new List<Download>
++                {
++                    new()
++                    {
++                        DownloadId = downloadId,
++                        TorrentId = torrentId
++                    }
++                }
++            }
++        };
++
++        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
++        _torrentsMock.Setup(m => m.GetDownloadStats(downloadId)).Returns((0, 1000, 1000));
++
++        // Act
++        var result = await _qBittorrent.TorrentInfo();
++
++        // Assert
++        Assert.Single(result);
++        Assert.True(result[0].Progress < 1.0f);
++        Assert.NotEqual("pausedUP", result[0].State);
++        Assert.Null(result[0].CompletionOn);
++    }
++
+     [Fact]
+     public async Task TorrentInfo_ShouldReportComplete_WhenAllDownloadsHaveCompletedTimestamps()
+     {
+diff --git a/server/RdtClient.Service/Services/QBittorrent.cs b/server/RdtClient.Service/Services/QBittorrent.cs
+index 9f96129..9c25bfb 100644
+--- a/server/RdtClient.Service/Services/QBittorrent.cs
++++ b/server/RdtClient.Service/Services/QBittorrent.cs
+@@ -343,7 +343,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+         {
+             var allDownloadsCompleted = torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
+ 
+-            return allDownloadsCompleted || (rdProgress >= 1.0 && downloadProgress >= 1.0);
++            return allDownloadsCompleted;
+         }
+ 
+         return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;

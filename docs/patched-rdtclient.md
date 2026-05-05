@@ -8,6 +8,7 @@ these wrapper patches, applied in order:
 2. `patches/rdtclient-slot-recovery-20260505.patch`
 3. `patches/rdtclient-torbox-delete-control-id-20260505.patch`
 4. `patches/rdtclient-requeue-missing-materialized-files-20260505.patch`
+5. `patches/rdtclient-qb-complete-requires-materialized-downloads-20260505.patch`
 
 ## Patch Purpose
 
@@ -40,6 +41,9 @@ validation run:
   completed download rows but the local materialized files are missing, RDT resets
   those child downloads and clears torrent completion so the qB-compatible path
   materializes the files again instead of returning a stale complete row.
+- qB false-complete guard: local byte counters alone no longer make qB
+  `progress=1` / `pausedUP`; every selected child download must have a successful
+  local completion timestamp before Bindery sees the torrent as complete.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -56,15 +60,16 @@ git apply ../patches/rdtclient-torbox-materialization-20260504.patch
 git apply ../patches/rdtclient-slot-recovery-20260505.patch
 git apply ../patches/rdtclient-torbox-delete-control-id-20260505.patch
 git apply ../patches/rdtclient-requeue-missing-materialized-files-20260505.patch
+git apply ../patches/rdtclient-qb-complete-requires-materialized-downloads-20260505.patch
 docker build --platform linux/arm64/v8 \
-  -t rdtclient-torbox-lidarr:torbox-requeue-missing-files-20260505 .
+  -t rdtclient-torbox-lidarr:torbox-qb-complete-materialized-20260505 .
 ```
 
 Then configure this wrapper:
 
 ```sh
 RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-RDTCLIENT_TAG=torbox-requeue-missing-files-20260505
+RDTCLIENT_TAG=torbox-qb-complete-materialized-20260505
 docker compose up -d
 ```
 
@@ -72,7 +77,7 @@ docker compose up -d
 
 The deployed image was built on the Oracle arm64 host. Build-time tests passed:
 
-- `RdtClient.Service.Test`: 184 passed in the deployed patch-stack image build
+- `RdtClient.Service.Test`: 183 passed in the deployed patch-stack image build
 - `RdtClient.Web.Test`: 24 passed
 - `TorrentRunnerSlotRecoveryTest`: proves stale started Bezzad child downloads
   free the active download slot by retrying or failing cleanly.
@@ -82,6 +87,9 @@ The deployed image was built on the Oracle arm64 host. Build-time tests passed:
   proves provider-only completion is not exposed to Bindery as qB completion.
 - `TorrentsTest.AddMagnetToDebridQueue_WhenExistingCompletedTorrentHasNoLocalFiles_ShouldResetItForMaterialization`:
   proves a stale completed hash is requeued when its materialized files are gone.
+- `QBittorrentTest.TorrentInfo_ShouldNotReportComplete_WhenLocalBytesAreFullButChildDownloadsAreNotCompleted`:
+  proves full local byte counters without child completion timestamps are not
+  exposed as qB completion.
 
 Focused test filter before the full build:
 
