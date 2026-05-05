@@ -32,7 +32,7 @@ RDTClient database, logs, downloads, or live Lidarr configuration.
 
   ```sh
   RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-  RDTCLIENT_TAG=torbox-complete-signal-20260505b
+  RDTCLIENT_TAG=torbox-stale-child-recovery-20260505
   ```
 
 3. Open RDTClient only from the host or a trusted tunnel and configure your own

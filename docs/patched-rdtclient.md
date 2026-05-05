@@ -51,14 +51,14 @@ git apply ../patches/rdtclient-torbox-materialization-20260504.patch
 git apply ../patches/rdtclient-slot-recovery-20260505.patch
 git apply ../patches/rdtclient-torbox-delete-control-id-20260505.patch
 docker build --platform linux/arm64/v8 \
-  -t rdtclient-torbox-lidarr:torbox-complete-signal-20260505b .
+  -t rdtclient-torbox-lidarr:torbox-stale-child-recovery-20260505 .
 ```
 
 Then configure this wrapper:
 
 ```sh
 RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-RDTCLIENT_TAG=torbox-complete-signal-20260505b
+RDTCLIENT_TAG=torbox-stale-child-recovery-20260505
 docker compose up -d
 ```
 
@@ -66,8 +66,10 @@ docker compose up -d
 
 The deployed image was built on the Oracle arm64 host. Build-time tests passed:
 
-- `RdtClient.Service.Test`: 181 passed in the deployed patch-stack image build
+- `RdtClient.Service.Test`: 184 passed in the deployed patch-stack image build
 - `RdtClient.Web.Test`: 24 passed
+- `TorrentRunnerSlotRecoveryTest`: proves stale started Bezzad child downloads
+  free the active download slot by retrying or failing cleanly.
 - `TorBoxDebridClientTest.Delete_CallsTorrentsControl_WhenTypeIsTorrent`: proves
   torrent delete resolves and uses TorBox's numeric control id.
 - `QBittorrentTest.TorrentInfo_ShouldNotReportComplete_WhenProviderFinishedButNoLocalDownloadsExist`:
