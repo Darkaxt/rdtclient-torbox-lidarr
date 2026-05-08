@@ -951,7 +951,7 @@ public class Torrents(
 
         if (existingTorrent != null)
         {
-            return existingTorrent;
+            return await RequeueExistingTorrentIfMaterializedFilesAreMissing(existingTorrent);
         }
 
         var newTorrent = await torrentData.Add(null,
@@ -963,6 +963,62 @@ public class Torrents(
                                                torrent);
 
         return newTorrent;
+    }
+
+    private async Task<Torrent> RequeueExistingTorrentIfMaterializedFilesAreMissing(Torrent torrent)
+    {
+        if (!torrent.Completed.HasValue || torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone || torrent.Downloads.Count == 0)
+        {
+            return torrent;
+        }
+
+        var staleDownloads = torrent.Downloads
+                                    .Where(download => download.Completed.HasValue)
+                                    .Where(download => !CompletedDownloadFileExists(torrent, download))
+                                    .ToList();
+
+        if (staleDownloads.Count == 0)
+        {
+            return torrent;
+        }
+
+        Log($"Requeueing completed torrent because materialized files are missing", torrent);
+
+        foreach (var download in staleDownloads)
+        {
+            while (TorrentRunner.ActiveDownloadClients.TryRemove(download.DownloadId, out var downloadClient))
+            {
+                await downloadClient.Cancel();
+            }
+
+            while (TorrentRunner.ActiveUnpackClients.TryRemove(download.DownloadId, out var unpackClient))
+            {
+                unpackClient.Cancel();
+            }
+
+            await downloads.Reset(download.DownloadId);
+        }
+
+        await torrentData.UpdateComplete(torrent.TorrentId, null, null, false);
+
+        torrent.Completed = null;
+        torrent.Error = null;
+
+        return await torrentData.GetById(torrent.TorrentId) ?? torrent;
+    }
+
+    private Boolean CompletedDownloadFileExists(Torrent torrent, Download download)
+    {
+        var relativePath = DownloadHelper.GetDownloadPath(torrent, download);
+
+        if (String.IsNullOrWhiteSpace(relativePath))
+        {
+            return true;
+        }
+
+        var fullPath = Path.Combine(DownloadPath(torrent), relativePath);
+
+        return fileSystem.File.Exists(fullPath);
     }
 
     public async Task Update(Torrent torrent)
@@ -1083,7 +1139,7 @@ public class Torrents(
                 await torrentData.UpdateRdData(torrent);
             }
         }
-        catch (Exception ex)
+        catch
         {
             // ignored
         }

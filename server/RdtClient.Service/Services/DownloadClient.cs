@@ -22,6 +22,7 @@ public class DownloadClient(Download download, Torrent torrent, String destinati
     public Int64 Speed { get; private set; }
     public Int64 BytesTotal { get; private set; }
     public Int64 BytesDone { get; private set; }
+    public DateTimeOffset LastProgressAt { get; private set; } = DateTimeOffset.UtcNow;
 
     private Int64 LastBytesDone { get; set; }
 
@@ -30,6 +31,7 @@ public class DownloadClient(Download download, Torrent torrent, String destinati
         BytesDone = 0;
         BytesTotal = 0;
         Speed = 0;
+        LastProgressAt = DateTimeOffset.UtcNow;
 
         try
         {
@@ -85,6 +87,11 @@ public class DownloadClient(Download download, Torrent torrent, String destinati
                 BytesTotal = args.BytesTotal;
 
                 var bytesAdded = BytesDone - LastBytesDone;
+
+                if (bytesAdded > 0 || Speed > 0)
+                {
+                    LastProgressAt = DateTimeOffset.UtcNow;
+                }
 
                 LastBytesDone = BytesDone;
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using RdtClient.Data.Enums;
@@ -69,7 +70,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
         return await HandleAddTorrentErrors(async asQueued =>
         {
             var user = await GetClient().User.GetAsync(true);
-            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddMagnetAsync(magnetLink, user.Data?.Settings?.SeedTorrents ?? 3, as_queued: asQueued);
+            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddMagnetAsync(magnetLink, user.Data?.Settings?.SeedTorrents ?? 3, false, as_queued: asQueued);
 
             return result.Data!.Hash!;
         });
@@ -80,7 +81,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
         return await HandleAddTorrentErrors(async asQueued =>
         {
             var user = await GetClient().User.GetAsync(true);
-            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddFileAsync(bytes, user.Data?.Settings?.SeedTorrents ?? 3, as_queued: asQueued);
+            var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddFileAsync(bytes, user.Data?.Settings?.SeedTorrents ?? 3, false, as_queued: asQueued);
 
             return result.Data!.Hash!;
         });
@@ -156,7 +157,8 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
             }
             else
             {
-                await GetClient().Torrents.ControlAsync(torrent.RdId, "delete");
+                var controlId = await ResolveTorrentControlId(torrent);
+                await GetClient().Torrents.ControlAsync(controlId, "delete");
             }
         });
     }
@@ -237,7 +239,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
                 torrent.RdSize = rdTorrent.OriginalBytes;
             }
 
-            if (rdTorrent.Files != null)
+            if (rdTorrent.Files is { Count: > 0 })
             {
                 torrent.RdFiles = JsonConvert.SerializeObject(rdTorrent.Files);
             }
@@ -265,7 +267,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
                     "allocating" => TorrentStatus.Processing,
                     "metaDL" => TorrentStatus.Processing,
                     _ when rdTorrent.Status != null && rdTorrent.Status.StartsWith("queued", StringComparison.OrdinalIgnoreCase) => TorrentStatus.Processing,
-                    "completed" => TorrentStatus.Downloading,
+                    "completed" => TorrentStatus.Finished,
                     "processing" => TorrentStatus.Downloading,
                     _ when rdTorrent.Status != null && rdTorrent.Status.StartsWith("paused", StringComparison.OrdinalIgnoreCase) => TorrentStatus.Downloading,
                     _ when rdTorrent.Status != null && rdTorrent.Status.StartsWith("stalled", StringComparison.OrdinalIgnoreCase) => TorrentStatus.Downloading,
@@ -327,7 +329,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
 
         var downloadableFiles = torrent.Files.Where(file => fileFilter.IsDownloadable(torrent, file.Path, file.Bytes)).ToList();
 
-        if (downloadableFiles.Count == torrent.Files.Count && torrent.DownloadClient != Data.Enums.DownloadClient.Symlink && Settings.Get.Provider.PreferZippedDownloads)
+        if (downloadableFiles.Count == torrent.Files.Count && torrent.DownloadClient != Data.Enums.DownloadClient.Symlink && Settings.Get.Provider.PreferZippedDownloads && String.IsNullOrWhiteSpace(torrent.IncludeRegex))
         {
             logger.LogDebug("Downloading files from TorBox as a zip.");
 
@@ -435,6 +437,62 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
     protected virtual async Task<Response<List<AvailableUsenet?>>> GetUsenetAvailability(String hash)
     {
         return await HandleErrors(() => GetClient().Usenet.GetAvailabilityAsync(hash, true));
+    }
+
+    private async Task<String> ResolveTorrentControlId(Torrent torrent)
+    {
+        if (!String.IsNullOrWhiteSpace(torrent.RdId) && Int32.TryParse(torrent.RdId, NumberStyles.None, CultureInfo.InvariantCulture, out _))
+        {
+            return torrent.RdId;
+        }
+
+        if (!String.IsNullOrWhiteSpace(torrent.Hash))
+        {
+            try
+            {
+                var torBoxTorrent = await HandleErrors(() => GetClient().Torrents.GetHashInfoAsync(torrent.Hash, true));
+
+                if (torBoxTorrent is { Id: > 0 })
+                {
+                    return torBoxTorrent.Id.ToString(CultureInfo.InvariantCulture);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not resolve TorBox control id for torrent hash {TorrentHash}; falling back to RdId", torrent.Hash);
+            }
+
+            var currentId = await ResolveTorrentControlIdFromList(torrent.Hash, () => GetClient().Torrents.GetCurrentAsync(true));
+            if (currentId != null)
+            {
+                return currentId;
+            }
+
+            var queuedId = await ResolveTorrentControlIdFromList(torrent.Hash, () => GetClient().Torrents.GetQueuedAsync(true));
+            if (queuedId != null)
+            {
+                return queuedId;
+            }
+        }
+
+        return torrent.RdId!;
+    }
+
+    private async Task<String?> ResolveTorrentControlIdFromList(String hash, Func<Task<List<TorrentInfoResult>?>> getTorrents)
+    {
+        try
+        {
+            var torBoxTorrent = (await HandleErrors(getTorrents) ?? [])
+                .FirstOrDefault(torrent => hash.Equals(torrent.Hash, StringComparison.OrdinalIgnoreCase) && torrent.Id > 0);
+
+            return torBoxTorrent?.Id.ToString(CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not resolve TorBox control id from torrent list for hash {TorrentHash}", hash);
+
+            return null;
+        }
     }
 
     private DebridClientTorrent Map(TorrentInfoResult torrent)

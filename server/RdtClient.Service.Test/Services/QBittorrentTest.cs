@@ -98,6 +98,48 @@ public class QBittorrentTest
     }
 
     [Fact]
+    public async Task TorrentInfo_ShouldReportComplete_WhenAllDownloadsHaveCompletedTimestamps()
+    {
+        // Arrange
+        var downloadId = Guid.NewGuid();
+        var torrentId = Guid.NewGuid();
+
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = torrentId,
+                Hash = "hash1",
+                RdName = "Torrent 1",
+                RdProgress = 100,
+                Completed = DateTimeOffset.UtcNow,
+                Type = DownloadType.Torrent,
+                Downloads = new List<Download>
+                {
+                    new()
+                    {
+                        DownloadId = downloadId,
+                        TorrentId = torrentId,
+                        Completed = DateTimeOffset.UtcNow,
+                        DownloadFinished = DateTimeOffset.UtcNow
+                    }
+                }
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        // Act
+        var result = await _qBittorrent.TorrentInfo();
+
+        // Assert
+        Assert.Single(result);
+        Assert.Equal(1.0f, result[0].Progress);
+        Assert.Equal("pausedUP", result[0].State);
+        Assert.NotNull(result[0].CompletionOn);
+    }
+
+    [Fact]
     public async Task TorrentInfo_ShouldReport90Percent_WhenRDIs100AndLocalIs80()
     {
         // Arrange
@@ -137,6 +179,68 @@ public class QBittorrentTest
 
         // Current behavior is (1.0 + 0.8) / 2 = 0.9
         Assert.Equal(0.9f, result[0].Progress);
+    }
+
+    [Fact]
+    public async Task TorrentInfo_ShouldNotReportComplete_WhenCompletionTimestampIsNotSuccessfulMaterialization()
+    {
+        // Arrange
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = Guid.NewGuid(),
+                Hash = "hash1",
+                RdName = "Torrent 1",
+                RdProgress = 0,
+                RdSize = 1000,
+                RdStatus = TorrentStatus.Downloading,
+                Completed = DateTimeOffset.UtcNow,
+                Type = DownloadType.Torrent
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        // Act
+        var result = await _qBittorrent.TorrentInfo();
+
+        // Assert
+        Assert.Single(result);
+        Assert.NotEqual(1.0f, result[0].Progress);
+        Assert.NotEqual("pausedUP", result[0].State);
+        Assert.Null(result[0].CompletionOn);
+    }
+
+    [Fact]
+    public async Task TorrentInfo_ShouldNotReportComplete_WhenProviderFinishedButNoLocalDownloadsExist()
+    {
+        // Arrange
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = Guid.NewGuid(),
+                Hash = "hash1",
+                RdName = "Torrent 1",
+                RdProgress = 100,
+                RdSize = 1000,
+                RdStatus = TorrentStatus.Finished,
+                HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
+                Type = DownloadType.Torrent
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        // Act
+        var result = await _qBittorrent.TorrentInfo();
+
+        // Assert
+        Assert.Single(result);
+        Assert.True(result[0].Progress < 1.0f);
+        Assert.NotEqual("pausedUP", result[0].State);
+        Assert.Null(result[0].CompletionOn);
     }
 
     [Fact]
@@ -186,6 +290,38 @@ public class QBittorrentTest
                 Assert.Equal("dangerous.exe", second.Name);
                 Assert.Equal(0, second.Priority);
             });
+    }
+
+    [Fact]
+    public async Task TorrentFileContents_ShouldNotReportSelectedFilesComplete_WhenProviderFinishedButNoLocalDownloadsExist()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "hash1",
+            Type = DownloadType.Torrent,
+            RdStatus = TorrentStatus.Finished,
+            HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
+            RdFiles = JsonSerializer.Serialize(new List<DebridClientFile>
+            {
+                new()
+                {
+                    Id = 1,
+                    Path = "book.epub",
+                    Bytes = 1000,
+                    Selected = true
+                }
+            })
+        };
+
+        _torrentsMock.Setup(m => m.GetByHash("hash1")).ReturnsAsync(torrent);
+
+        // Act
+        var result = await _qBittorrent.TorrentFileContents("hash1");
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(0f, result![0].Progress);
     }
 
     [Fact]

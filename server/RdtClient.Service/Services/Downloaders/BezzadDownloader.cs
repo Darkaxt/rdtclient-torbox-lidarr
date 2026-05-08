@@ -83,6 +83,10 @@ public class BezzadDownloader : IDownloader
             {
                 error = args.Error.Message;
             }
+            else
+            {
+                error = FinalizeCompletedDownload(_filePath);
+            }
 
             DownloadComplete?.Invoke(this,
                                      new()
@@ -134,6 +138,39 @@ public class BezzadDownloader : IDownloader
         _downloadService.Resume();
 
         return Task.CompletedTask;
+    }
+
+    public static String? FinalizeCompletedDownload(String filePath)
+    {
+        if (File.Exists(filePath))
+        {
+            return null;
+        }
+
+        var tempPath = $"{filePath}.download";
+
+        if (!File.Exists(tempPath))
+        {
+            return $"Download completed but no materialized file was found at {filePath} or {tempPath}";
+        }
+
+        try
+        {
+            var directory = Path.GetDirectoryName(filePath);
+
+            if (!String.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.Move(tempPath, filePath);
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"Download completed but failed to finalize {tempPath}: {ex.Message}";
+        }
     }
 
     private void SetSettings()

@@ -19,6 +19,9 @@ public class TorrentRunner(
     IHttpClientFactory httpClientFactory,
     IRateLimitCoordinator coordinator)
 {
+    private static readonly TimeSpan NonProgressingTorBoxSlotGrace = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan StaleStartedDownloadTimeout = TimeSpan.FromMinutes(15);
+
     public static readonly ConcurrentDictionary<Guid, DownloadClient> ActiveDownloadClients = new();
     public static readonly ConcurrentDictionary<Guid, UnpackClient> ActiveUnpackClients = new();
     private DateTimeOffset? _lastNextAllowedAt;
@@ -310,6 +313,8 @@ public class TorrentRunner(
             }
         }
 
+        await RecoverStaleDownloads(allTorrents, downloads, DateTimeOffset.UtcNow, StaleStartedDownloadTimeout);
+
         // Process torrent retries
         foreach (var torrent in allTorrents.Where(m => m.Retry != null))
         {
@@ -368,6 +373,7 @@ public class TorrentRunner(
 
         // Process torrents in DebridQueue
         var torrentsToAddToProvider = allTorrents.Where(m => m.RdId == null && m.RdAdded == null && m.FileOrMagnet != null && m.RdStatus == TorrentStatus.Queued)
+                                                 .OrderByDescending(m => m.Added)
                                                  .ToList();
 
         if (torrentsToAddToProvider.Count != 0)
@@ -380,7 +386,8 @@ public class TorrentRunner(
             }
             else
             {
-                var downloadingTorrentsCount = allTorrents.Count(m => m.RdStatus is not (TorrentStatus.Queued or TorrentStatus.Finished or TorrentStatus.Error));
+                var now = DateTimeOffset.UtcNow;
+                var downloadingTorrentsCount = allTorrents.Count(m => CountsAgainstProviderDownloadLimit(m, now));
 
                 var maxParallelDownloads = Settings.Get.Provider.MaxParallelDownloads;
 
@@ -389,7 +396,7 @@ public class TorrentRunner(
                                 maxParallelDownloads,
                                 torrentsToAddToProvider.Count);
 
-                var dequeueCount = maxParallelDownloads == 0 ? torrentsToAddToProvider.Count : maxParallelDownloads - downloadingTorrentsCount;
+                var dequeueCount = maxParallelDownloads == 0 ? torrentsToAddToProvider.Count : Math.Max(0, maxParallelDownloads - downloadingTorrentsCount);
 
                 foreach (var torrent in torrentsToAddToProvider.Take(dequeueCount))
                 {
@@ -694,7 +701,9 @@ public class TorrentRunner(
 
                     await torrents.SelectFiles(torrent.TorrentId);
 
-                    await torrents.UpdateFilesSelected(torrent.TorrentId, DateTime.UtcNow);
+                    var filesSelectedAt = DateTimeOffset.UtcNow;
+                    await torrents.UpdateFilesSelected(torrent.TorrentId, filesSelectedAt);
+                    torrent.FilesSelected = filesSelectedAt;
                 }
 
                 // Debrid provider finished downloading the torrent, process the file to host.
@@ -780,6 +789,108 @@ public class TorrentRunner(
             NextDequeueTime = nextDequeueTime,
             SecondsRemaining = secondsRemaining
         });
+    }
+
+    public static async Task<Int32> RecoverStaleDownloads(IEnumerable<Torrent> allTorrents, IDownloads downloads, DateTimeOffset now, TimeSpan staleTimeout)
+    {
+        var recovered = 0;
+
+        foreach (var torrent in allTorrents)
+        {
+            foreach (var download in torrent.Downloads)
+            {
+                var parentTorrent = download.Torrent ?? torrent;
+
+                if (parentTorrent.DownloadClient != Data.Enums.DownloadClient.Bezzad)
+                {
+                    continue;
+                }
+
+                if (download.DownloadStarted == null ||
+                    download.DownloadFinished != null ||
+                    download.Completed != null ||
+                    download.Error != null)
+                {
+                    continue;
+                }
+
+                var activeDownload = ActiveDownloadClients.TryGetValue(download.DownloadId, out var active) ? active : null;
+                var lastProgressAt = activeDownload?.BytesDone > 0 ? activeDownload.LastProgressAt : download.DownloadStarted.Value;
+
+                if (activeDownload?.Speed > 0 || now - lastProgressAt < staleTimeout)
+                {
+                    continue;
+                }
+
+                if (ActiveDownloadClients.TryRemove(download.DownloadId, out var removedDownload))
+                {
+                    await removedDownload.Cancel();
+                }
+
+                while (ActiveUnpackClients.TryRemove(download.DownloadId, out var unpackClient))
+                {
+                    unpackClient.Cancel();
+                }
+
+                recovered++;
+
+                if (download.RetryCount < parentTorrent.DownloadRetryAttempts)
+                {
+                    await downloads.Reset(download.DownloadId);
+                    await downloads.UpdateRetryCount(download.DownloadId, download.RetryCount + 1);
+                }
+                else
+                {
+                    await downloads.UpdateError(download.DownloadId, $"stale Bezzad download made no progress for {staleTimeout}");
+                    await downloads.UpdateCompleted(download.DownloadId, now);
+                }
+            }
+        }
+
+        return recovered;
+    }
+
+    public static Boolean CountsAgainstProviderDownloadLimit(Torrent torrent, DateTimeOffset now)
+    {
+        if (torrent.RdStatus is null or TorrentStatus.Queued or TorrentStatus.Finished or TorrentStatus.Error)
+        {
+            return false;
+        }
+
+        if (IsNonProgressingTorBoxSlot(torrent, now))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static Boolean IsNonProgressingTorBoxSlot(Torrent torrent, DateTimeOffset now)
+    {
+        var isTorBox = torrent.ClientKind == Provider.TorBox || Settings.Get.Provider.Provider == Provider.TorBox;
+
+        if (!isTorBox || torrent.RdStatus is not (TorrentStatus.Processing or TorrentStatus.Downloading))
+        {
+            return false;
+        }
+
+        if (torrent.Downloads.Count != 0 || torrent.RdSpeed > 0)
+        {
+            return false;
+        }
+
+        var providerStartedAt = torrent.RdAdded ?? torrent.Added;
+
+        if (now - providerStartedAt < NonProgressingTorBoxSlotGrace)
+        {
+            return false;
+        }
+
+        var raw = torrent.RdStatusRaw ?? "";
+
+        return raw.StartsWith("queued", StringComparison.OrdinalIgnoreCase) ||
+               raw.StartsWith("stalled", StringComparison.OrdinalIgnoreCase) ||
+               raw.StartsWith("checking", StringComparison.OrdinalIgnoreCase);
     }
 
     private void Log(String message, Download? download, Torrent? torrent)

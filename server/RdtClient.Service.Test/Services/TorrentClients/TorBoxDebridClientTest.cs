@@ -37,6 +37,108 @@ public class TorBoxDebridClientTest
     }
 
     [Fact]
+    public async Task AddTorrentMagnet_DisablesTorBoxZipCreation()
+    {
+        // Arrange
+        var magnetLink = "magnet:?xt=urn:btih:testhash";
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var userApiMock = new Mock<IUserApi>();
+
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object)
+        {
+            CallBase = true
+        };
+
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        torBoxClientMock.Setup(m => m.User).Returns(userApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        userApiMock.Setup(m => m.GetAsync(true, It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(new Response<User>
+                   {
+                       Data = new()
+                       {
+                           Settings = new()
+                           {
+                               SeedTorrents = 5
+                           }
+                       }
+                   });
+
+        torrentsApiMock.Setup(m => m.AddMagnetAsync(magnetLink, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new Response<TorrentAddResult>
+                       {
+                           Data = new()
+                           {
+                               Hash = "testhash"
+                           }
+                       });
+
+        // Act
+        var hash = await clientMock.Object.AddTorrentMagnet(magnetLink);
+
+        // Assert
+        Assert.Equal("testhash", hash);
+        torrentsApiMock.Verify(m => m.AddMagnetAsync(magnetLink, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Once);
+        torrentsApiMock.Verify(m => m.AddMagnetAsync(magnetLink, 5, true, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AddTorrentFile_DisablesTorBoxZipCreation()
+    {
+        // Arrange
+        var bytes = new Byte[]
+        {
+            1, 2, 3
+        };
+
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var userApiMock = new Mock<IUserApi>();
+
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object)
+        {
+            CallBase = true
+        };
+
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        torBoxClientMock.Setup(m => m.User).Returns(userApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        userApiMock.Setup(m => m.GetAsync(true, It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(new Response<User>
+                   {
+                       Data = new()
+                       {
+                           Settings = new()
+                           {
+                               SeedTorrents = 5
+                           }
+                       }
+                   });
+
+        torrentsApiMock.Setup(m => m.AddFileAsync(bytes, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new Response<TorrentAddResult>
+                       {
+                           Data = new()
+                           {
+                               Hash = "testhash"
+                           }
+                       });
+
+        // Act
+        var hash = await clientMock.Object.AddTorrentFile(bytes);
+
+        // Assert
+        Assert.Equal("testhash", hash);
+        torrentsApiMock.Verify(m => m.AddFileAsync(bytes, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Once);
+        torrentsApiMock.Verify(m => m.AddFileAsync(bytes, 5, true, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task GetDownloads_ReturnsTorrentsAndNzbsWithCorrectType()
     {
         // Arrange
@@ -203,6 +305,39 @@ public class TorBoxDebridClientTest
         // Arrange
         var torrent = new Torrent
         {
+            Hash = "torrent-hash",
+            RdId = "torrent-hash",
+            Type = DownloadType.Torrent
+        };
+
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new TorrentInfoResult
+                       {
+                           Id = 12345
+                       });
+
+        // Act
+        await clientMock.Object.Delete(torrent);
+
+        // Assert
+        torrentsApiMock.Verify(m => m.ControlAsync("12345", "delete", It.IsAny<CancellationToken>()), Times.Once);
+        torrentsApiMock.Verify(m => m.ControlAsync("torrent-hash", "delete", It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Delete_FallsBackToRdId_WhenTorrentControlIdCannotBeResolved()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "torrent-hash",
             RdId = "torrent-id",
             Type = DownloadType.Torrent
         };
@@ -214,11 +349,57 @@ public class TorBoxDebridClientTest
         torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
         clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
 
+        torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync((TorrentInfoResult?)null);
+
         // Act
         await clientMock.Object.Delete(torrent);
 
         // Assert
         torrentsApiMock.Verify(m => m.ControlAsync("torrent-id", "delete", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Delete_ResolvesControlIdFromCurrentList_WhenHashInfoHasNoActiveId()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "torrent-hash",
+            RdId = "torrent-hash",
+            Type = DownloadType.Torrent
+        };
+
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new TorrentInfoResult
+                       {
+                           Id = 0,
+                           Hash = "torrent-hash"
+                       });
+
+        torrentsApiMock.Setup(m => m.GetCurrentAsync(true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new List<TorrentInfoResult>
+                       {
+                           new()
+                           {
+                               Id = 67890,
+                               Hash = "torrent-hash"
+                           }
+                       });
+
+        // Act
+        await clientMock.Object.Delete(torrent);
+
+        // Assert
+        torrentsApiMock.Verify(m => m.ControlAsync("67890", "delete", It.IsAny<CancellationToken>()), Times.Once);
+        torrentsApiMock.Verify(m => m.ControlAsync("torrent-hash", "delete", It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -450,6 +631,63 @@ public class TorBoxDebridClientTest
         Assert.Single(result);
         Assert.Equal("https://torbox.app/fakedl/12345/zip", result[0].RestrictedLink);
         Assert.Equal("TestTorrent.zip", result[0].FileName);
+    }
+
+    [Fact]
+    public async Task GetDownloadInfos_IgnoresPreferZip_WhenIncludeRegexIsSet()
+    {
+        // Arrange
+        var files = new List<DebridClientFile>
+        {
+            new()
+            {
+                Id = 1,
+                Path = "Book/part1.mp3",
+                Bytes = 1000
+            },
+            new()
+            {
+                Id = 2,
+                Path = "Book/part2.mp3",
+                Bytes = 2000
+            }
+        };
+
+        var torrent = new Torrent
+        {
+            Hash = "test-hash",
+            RdName = "TestTorrent",
+            RdFiles = JsonConvert.SerializeObject(files),
+            DownloadClient = DownloadClient.Aria2c,
+            IncludeRegex = "^Book/.*\\.mp3$"
+        };
+
+        Settings.Get.Provider.PreferZippedDownloads = true;
+
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        torrentsApiMock.Setup(m => m.GetHashInfoAsync("test-hash", true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new TorrentInfoResult
+                       {
+                           Id = 12345
+                       });
+
+        _fileFilterMock.Setup(m => m.IsDownloadable(torrent, It.IsAny<String>(), It.IsAny<Int64>())).Returns(true);
+
+        // Act
+        var result = await clientMock.Object.GetDownloadInfos(torrent);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(2, result.Count);
+        Assert.Equal("https://torbox.app/fakedl/12345/1", result[0].RestrictedLink);
+        Assert.Equal("https://torbox.app/fakedl/12345/2", result[1].RestrictedLink);
+        Assert.DoesNotContain(result, file => file.RestrictedLink.EndsWith("/zip", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -879,6 +1117,75 @@ public class TorBoxDebridClientTest
 
         // Assert
         Assert.Equal(TorrentStatus.Error, result.RdStatus);
+    }
+
+    [Fact]
+    public async Task UpdateData_MapsCompletedTorBoxTorrentToFinished()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            RdId = "test-rd-id",
+            RdStatus = TorrentStatus.Downloading
+        };
+
+        var torrentClientTorrent = new DebridClientTorrent
+        {
+            Status = "completed",
+            Host = "False",
+            Filename = "test-file",
+            Progress = 100
+        };
+
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+
+        // Act
+        var result = await clientMock.Object.UpdateData(torrent, torrentClientTorrent);
+
+        // Assert
+        Assert.Equal(TorrentStatus.Finished, result.RdStatus);
+    }
+
+    [Fact]
+    public async Task UpdateData_PreservesExistingFiles_WhenTorBoxRefreshHasNoFiles()
+    {
+        // Arrange
+        var knownFiles = new List<DebridClientFile>
+        {
+            new()
+            {
+                Id = 7,
+                Path = "book.mp3",
+                Bytes = 1024
+            }
+        };
+
+        var torrent = new Torrent
+        {
+            RdId = "test-rd-id",
+            RdStatus = TorrentStatus.Downloading,
+            RdFiles = JsonConvert.SerializeObject(knownFiles)
+        };
+
+        var torrentClientTorrent = new DebridClientTorrent
+        {
+            Status = "completed",
+            Host = "False",
+            Filename = "test-file",
+            Progress = 100,
+            Files = []
+        };
+
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+
+        // Act
+        var result = await clientMock.Object.UpdateData(torrent, torrentClientTorrent);
+
+        // Assert
+        Assert.Equal(TorrentStatus.Finished, result.RdStatus);
+        var preservedFile = Assert.Single(result.Files);
+        Assert.Equal("book.mp3", preservedFile.Path);
+        Assert.Equal(7, preservedFile.Id);
     }
 
     [Fact]

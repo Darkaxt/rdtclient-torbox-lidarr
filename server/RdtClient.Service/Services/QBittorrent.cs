@@ -221,36 +221,40 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
             var rdProgress = Math.Clamp(torrent.RdProgress ?? 0.0, 0.0, 100.0) / 100.0;
             var bytesTotal = torrent.RdSize ?? 0;
             var speed = torrent.RdSpeed ?? 0;
-            var bytesDone = (Int64)(bytesTotal * rdProgress);
+            Double? downloadProgress = null;
 
-            Double progress;
-
-            if (torrent.Completed != null)
-            {
-                progress = 1.0;
-            }
-            else if (torrent.Downloads is { Count: > 0 })
+            if (torrent.Downloads is { Count: > 0 })
             {
                 var dlStats = torrent.Downloads.Select(m => torrents.GetDownloadStats(m.DownloadId)).ToList();
                 var dlBytesDone = dlStats.Sum(m => m.BytesDone);
                 var dlBytesTotal = dlStats.Sum(m => m.BytesTotal);
                 speed = (Int32)(dlStats.Any() ? dlStats.Average(m => m.Speed) : 0);
-                var downloadProgress = dlBytesTotal > 0 ? Math.Clamp((Double)dlBytesDone / dlBytesTotal, 0.0, 1.0) : 0;
+                downloadProgress = dlBytesTotal > 0 ? Math.Clamp((Double)dlBytesDone / dlBytesTotal, 0.0, 1.0) : 0;
+            }
 
-                if (rdProgress >= 1.0 && downloadProgress >= 1.0)
-                {
-                    progress = 1.0;
-                }
-                else
-                {
-                    progress = (rdProgress + downloadProgress) / 2.0;
-                }
+            var completedSuccessfully = CompletedSuccessfully(torrent, rdProgress, downloadProgress);
+
+            Double progress;
+
+            if (completedSuccessfully)
+            {
+                progress = 1.0;
+            }
+            else if (downloadProgress.HasValue)
+            {
+                progress = (rdProgress + downloadProgress.Value) / 2.0;
             }
             else
             {
                 progress = rdProgress;
             }
 
+            if (!completedSuccessfully && progress >= 1.0)
+            {
+                progress = 0.999;
+            }
+
+            var bytesDone = (Int64)(bytesTotal * progress);
             var remaining = TimeSpan.Zero;
 
             if (progress > 0 && progress < 1.0)
@@ -269,7 +273,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
                 Availability = 2,
                 Category = torrent.Category ?? "",
                 Completed = bytesDone,
-                CompletionOn = torrent.Completed?.ToUnixTimeSeconds(),
+                CompletionOn = completedSuccessfully ? torrent.Completed?.ToUnixTimeSeconds() : null,
                 ContentPath = torrentPath,
                 DlLimit = -1,
                 Dlspeed = speed,
@@ -313,7 +317,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
             {
                 result.State = "error";
             }
-            else if (torrent.Completed.HasValue)
+            else if (completedSuccessfully)
             {
                 result.State = "pausedUP";
             }
@@ -328,6 +332,38 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
         return results;
     }
 
+    private static Boolean CompletedSuccessfully(Torrent torrent, Double rdProgress, Double? downloadProgress)
+    {
+        if (!String.IsNullOrWhiteSpace(torrent.Error))
+        {
+            return false;
+        }
+
+        if (torrent.Downloads.Count > 0)
+        {
+            var allDownloadsCompleted = torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
+
+            return allDownloadsCompleted || (rdProgress >= 1.0 && downloadProgress >= 1.0);
+        }
+
+        return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;
+    }
+
+    private static Boolean SelectedFilesAreMaterialized(Torrent torrent)
+    {
+        if (!String.IsNullOrWhiteSpace(torrent.Error))
+        {
+            return false;
+        }
+
+        if (torrent.Downloads.Count > 0)
+        {
+            return torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
+        }
+
+        return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;
+    }
+
     public async Task<IList<TorrentFileItem>?> TorrentFileContents(String hash)
     {
         var torrent = await torrents.GetByHash(hash);
@@ -337,7 +373,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
             return null;
         }
 
-        var progress = torrent.Completed.HasValue || torrent.RdStatus == TorrentStatus.Finished ? 1f : 0f;
+        var progress = SelectedFilesAreMaterialized(torrent) ? 1f : 0f;
 
         return torrent.Files
             .Select((file, index) => new TorrentFileItem

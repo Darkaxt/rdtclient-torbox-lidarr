@@ -419,12 +419,73 @@ public class TorrentsTest
 
         // Assert
         mocks.TorrentDataMock.Verify(t => t.Add(null,
-                                                It.IsAny<String>(),
-                                                link,
-                                                false,
-                                                DownloadType.Nzb,
-                                                It.IsAny<DownloadClient>(),
-                                                It.IsAny<Torrent>()),
-                                     Times.Once);
+                                                 It.IsAny<String>(),
+                                                 link,
+                                                 false,
+                                                 DownloadType.Nzb,
+                                                 It.IsAny<DownloadClient>(),
+                                                 It.IsAny<Torrent>()),
+                                      Times.Once);
+    }
+
+    [Fact]
+    public async Task AddMagnetToDebridQueue_WhenExistingCompletedTorrentHasNoLocalFiles_ShouldResetItForMaterialization()
+    {
+        // Arrange
+        var mocks = new Mocks();
+        var torrentId = Guid.NewGuid();
+        var downloadId = Guid.NewGuid();
+        var hash = "0123456789abcdef0123456789abcdef01234567";
+        var magnet = $"magnet:?xt=urn:btih:{hash}&dn=Book";
+
+        Settings.Get.DownloadClient.DownloadPath = "/downloads";
+
+        var existingTorrent = new Torrent
+        {
+            TorrentId = torrentId,
+            Hash = hash,
+            Category = "bindery",
+            RdName = "Book",
+            Completed = DateTimeOffset.UtcNow,
+            HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
+            Type = DownloadType.Torrent,
+            Downloads = new List<Download>
+            {
+                new()
+                {
+                    DownloadId = downloadId,
+                    TorrentId = torrentId,
+                    Link = "https://torbox.local/download/book.mp3",
+                    FileName = "book.mp3",
+                    Completed = DateTimeOffset.UtcNow,
+                    DownloadFinished = DateTimeOffset.UtcNow
+                }
+            }
+        };
+
+        mocks.EnricherMock.Setup(e => e.EnrichMagnetLink(magnet)).ReturnsAsync(magnet);
+        mocks.TorrentDataMock.Setup(t => t.GetByHash(It.IsAny<String>())).ReturnsAsync(existingTorrent);
+        mocks.TorrentDataMock.Setup(t => t.GetById(torrentId)).ReturnsAsync(existingTorrent);
+        mocks.TorrentDataMock.Setup(t => t.UpdateComplete(torrentId, null, null, false)).Returns(Task.CompletedTask);
+        mocks.DownloadsMock.Setup(d => d.Reset(downloadId)).Returns(Task.CompletedTask);
+
+        var torrents = new TorrentsService(mocks.TorrentsLoggerMock.Object,
+                                           mocks.TorrentDataMock.Object,
+                                           mocks.DownloadsMock.Object,
+                                           mocks.ProcessFactoryMock.Object,
+                                           new MockFileSystem(),
+                                           mocks.EnricherMock.Object,
+                                           null!,
+                                           null!,
+                                           null!,
+                                           null!,
+                                           null!);
+
+        // Act
+        await torrents.AddMagnetToDebridQueue(magnet, new Torrent());
+
+        // Assert
+        mocks.DownloadsMock.Verify(d => d.Reset(downloadId), Times.Once);
+        mocks.TorrentDataMock.Verify(t => t.UpdateComplete(torrentId, null, null, false), Times.Once);
     }
 }
