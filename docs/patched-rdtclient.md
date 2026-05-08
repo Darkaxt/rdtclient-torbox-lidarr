@@ -9,6 +9,7 @@ these wrapper patches, applied in order:
 3. `patches/rdtclient-torbox-delete-control-id-20260505.patch`
 4. `patches/rdtclient-requeue-missing-materialized-files-20260505.patch`
 5. `patches/rdtclient-qb-complete-requires-materialized-downloads-20260505.patch`
+6. `patches/rdtclient-include-regex-disables-zip-20260508.patch`
 
 ## Patch Purpose
 
@@ -44,6 +45,10 @@ validation run:
 - qB false-complete guard: local byte counters alone no longer make qB
   `progress=1` / `pausedUP`; every selected child download must have a successful
   local completion timestamp before Bindery sees the torrent as complete.
+- Include-regex materialization: when Bindery sends a filtered torrent with
+  `IncludeRegex`, TorBox file downloads are requested individually even if
+  `PreferZippedDownloads` is enabled, preventing cached audiobook package rows
+  from becoming provider-side zip downloads.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -61,15 +66,16 @@ git apply ../patches/rdtclient-slot-recovery-20260505.patch
 git apply ../patches/rdtclient-torbox-delete-control-id-20260505.patch
 git apply ../patches/rdtclient-requeue-missing-materialized-files-20260505.patch
 git apply ../patches/rdtclient-qb-complete-requires-materialized-downloads-20260505.patch
+git apply ../patches/rdtclient-include-regex-disables-zip-20260508.patch
 docker build --platform linux/arm64/v8 \
-  -t rdtclient-torbox-lidarr:torbox-qb-complete-materialized-20260505 .
+  -t rdtclient-torbox-lidarr:abb-include-regex-20260508 .
 ```
 
 Then configure this wrapper:
 
 ```sh
 RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-RDTCLIENT_TAG=torbox-qb-complete-materialized-20260505
+RDTCLIENT_TAG=abb-include-regex-20260508
 docker compose up -d
 ```
 
@@ -90,6 +96,9 @@ The deployed image was built on the Oracle arm64 host. Build-time tests passed:
 - `QBittorrentTest.TorrentInfo_ShouldNotReportComplete_WhenLocalBytesAreFullButChildDownloadsAreNotCompleted`:
   proves full local byte counters without child completion timestamps are not
   exposed as qB completion.
+- `TorBoxDebridClientTest.GetDownloadInfos_IgnoresPreferZip_WhenIncludeRegexIsSet`:
+  proves filtered torrents with `IncludeRegex` return individual TorBox file
+  links rather than `/zip`.
 
 Focused test filter before the full build:
 

@@ -1,0 +1,81 @@
+diff --git a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs b/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
+index 609204d..44f3dd2 100644
+--- a/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
++++ b/server/RdtClient.Service.Test/Services/TorrentClients/TorBoxDebridClientTest.cs
+@@ -632,6 +632,63 @@ public class TorBoxDebridClientTest
+         Assert.Equal("TestTorrent.zip", result[0].FileName);
+     }
+ 
++    [Fact]
++    public async Task GetDownloadInfos_IgnoresPreferZip_WhenIncludeRegexIsSet()
++    {
++        // Arrange
++        var files = new List<DebridClientFile>
++        {
++            new()
++            {
++                Id = 1,
++                Path = "Book/part1.mp3",
++                Bytes = 1000
++            },
++            new()
++            {
++                Id = 2,
++                Path = "Book/part2.mp3",
++                Bytes = 2000
++            }
++        };
++
++        var torrent = new Torrent
++        {
++            Hash = "test-hash",
++            RdName = "TestTorrent",
++            RdFiles = JsonConvert.SerializeObject(files),
++            DownloadClient = DownloadClient.Aria2c,
++            IncludeRegex = "^Book/.*\\.mp3$"
++        };
++
++        Settings.Get.Provider.PreferZippedDownloads = true;
++
++        var torrentsApiMock = new Mock<ITorrentsApi>();
++        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
++        var torBoxClientMock = new Mock<ITorBoxNetClient>();
++
++        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
++        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
++
++        torrentsApiMock.Setup(m => m.GetHashInfoAsync("test-hash", true, It.IsAny<CancellationToken>()))
++                       .ReturnsAsync(new TorrentInfoResult
++                       {
++                           Id = 12345
++                       });
++
++        _fileFilterMock.Setup(m => m.IsDownloadable(torrent, It.IsAny<String>(), It.IsAny<Int64>())).Returns(true);
++
++        // Act
++        var result = await clientMock.Object.GetDownloadInfos(torrent);
++
++        // Assert
++        Assert.NotNull(result);
++        Assert.Equal(2, result.Count);
++        Assert.Equal("https://torbox.app/fakedl/12345/1", result[0].RestrictedLink);
++        Assert.Equal("https://torbox.app/fakedl/12345/2", result[1].RestrictedLink);
++        Assert.DoesNotContain(result, file => file.RestrictedLink.EndsWith("/zip", StringComparison.OrdinalIgnoreCase));
++    }
++
+     [Fact]
+     public async Task Unrestrict_ParsesFakedlLinksCorrectly_ForIndividualFiles()
+     {
+diff --git a/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs b/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
+index b22733c..7bdfacf 100644
+--- a/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
++++ b/server/RdtClient.Service/Services/DebridClients/TorBoxDebridClient.cs
+@@ -329,7 +329,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
+ 
+         var downloadableFiles = torrent.Files.Where(file => fileFilter.IsDownloadable(torrent, file.Path, file.Bytes)).ToList();
+ 
+-        if (downloadableFiles.Count == torrent.Files.Count && torrent.DownloadClient != Data.Enums.DownloadClient.Symlink && Settings.Get.Provider.PreferZippedDownloads)
++        if (downloadableFiles.Count == torrent.Files.Count && torrent.DownloadClient != Data.Enums.DownloadClient.Symlink && Settings.Get.Provider.PreferZippedDownloads && String.IsNullOrWhiteSpace(torrent.IncludeRegex))
+         {
+             logger.LogDebug("Downloading files from TorBox as a zip.");
+ 
