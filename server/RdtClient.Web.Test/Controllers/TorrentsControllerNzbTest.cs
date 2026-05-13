@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
 using RdtClient.Data.Models.Data;
+using RdtClient.Data.Models.Internal;
 using RdtClient.Service.Helpers;
 using RdtClient.Service.Services;
 using RdtClient.Web.Controllers;
@@ -60,6 +61,30 @@ public class TorrentsControllerNzbTest
         // Assert
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         Assert.Contains("cleanup", conflict.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task UploadMagnet_WhenProviderCooldownActive_ReturnsTooManyRequests()
+    {
+        // Arrange
+        var nextAllowedAt = DateTimeOffset.UtcNow.AddMinutes(3);
+        _coordinatorMock.Setup(m => m.GetMaxNextAllowedAt()).Returns(nextAllowedAt);
+        var request = new TorrentControllerUploadMagnetRequest
+        {
+            MagnetLink = "magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+            Torrent = new Torrent { IncludeRegex = "(?s).*" }
+        };
+
+        // Act
+        var result = await _controller.UploadMagnet(request);
+
+        // Assert
+        var tooManyRequests = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(429, tooManyRequests.StatusCode);
+        var status = Assert.IsType<RateLimitStatus>(tooManyRequests.Value);
+        Assert.Equal(nextAllowedAt, status.NextDequeueTime);
+        Assert.True(status.SecondsRemaining > 0);
+        _torrentsMock.Verify(t => t.AddMagnetToDebridQueue(It.IsAny<String>(), It.IsAny<Torrent>()), Times.Never);
     }
 
     [Fact]

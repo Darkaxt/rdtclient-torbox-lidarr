@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Microsoft.Extensions.Logging;
+using MonoTorrent;
 using Newtonsoft.Json;
 using RdtClient.Data.Enums;
 using RdtClient.Data.Models.Data;
@@ -67,24 +68,28 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
 
     public async Task<String> AddTorrentMagnet(String magnetLink)
     {
+        var hash = TryParseMagnetHash(magnetLink);
+
         return await HandleAddTorrentErrors(async asQueued =>
         {
             var user = await GetClient().User.GetAsync(true);
             var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddMagnetAsync(magnetLink, user.Data?.Settings?.SeedTorrents ?? 3, false, as_queued: asQueued);
 
             return result.Data!.Hash!;
-        });
+        }, hash);
     }
 
     public async Task<String> AddTorrentFile(Byte[] bytes)
     {
+        var hash = await TryParseTorrentHash(bytes);
+
         return await HandleAddTorrentErrors(async asQueued =>
         {
             var user = await GetClient().User.GetAsync(true);
             var result = await GetClient(DiConfig.TORBOX_CLIENT_SLOW).Torrents.AddFileAsync(bytes, user.Data?.Settings?.SeedTorrents ?? 3, false, as_queued: asQueued);
 
             return result.Data!.Hash!;
-        });
+        }, hash);
     }
 
     public async Task<String> AddNzbLink(String nzbLink)
@@ -613,14 +618,112 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
         }
     }
 
-    private async Task<String> HandleAddTorrentErrors(Func<Boolean, Task<String>> action)
+    private async Task<String> HandleAddTorrentErrors(Func<Boolean, Task<String>> action, String? hash = null)
     {
-        return await HandleErrors(() => action(false));
+        try
+        {
+            return await HandleErrors(() => action(false));
+        }
+        catch (Exception ex) when (IsDownloadAlreadyQueued(ex))
+        {
+            var normalizedHash = NormalizeHash(hash);
+
+            if (!String.IsNullOrWhiteSpace(normalizedHash))
+            {
+                var existingHash = await ResolveExistingProviderTorrentHash(normalizedHash);
+
+                if (!String.IsNullOrWhiteSpace(existingHash))
+                {
+                    logger.LogInformation("TorBox reports torrent {TorrentHash} already queued; attached to existing provider item", normalizedHash);
+
+                    return existingHash;
+                }
+            }
+
+            var hashText = String.IsNullOrWhiteSpace(normalizedHash) ? "unknown hash" : $"hash {normalizedHash}";
+
+            throw new InvalidOperationException($"provider-queued: TorBox reports download already queued for {hashText}, but it is not visible in current or queued provider lists; retry after provider refresh", ex);
+        }
     }
 
     private async Task<String> HandleAddUsenetErrors(Func<Boolean, Task<String>> action)
     {
         return await HandleErrors(() => action(false));
+    }
+
+    private async Task<String?> ResolveExistingProviderTorrentHash(String hash)
+    {
+        foreach (var getTorrents in new Func<Task<IEnumerable<TorrentInfoResult>?>>[]
+                 {
+                     GetCurrentTorrents,
+                     GetQueuedTorrents
+                 })
+        {
+            IEnumerable<TorrentInfoResult>? torrents;
+
+            try
+            {
+                torrents = await getTorrents();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not inspect TorBox current/queued list while resolving already queued torrent {TorrentHash}", hash);
+                continue;
+            }
+
+            var match = (torrents ?? []).FirstOrDefault(torrent => hash.Equals(NormalizeHash(torrent.Hash), StringComparison.OrdinalIgnoreCase));
+
+            if (match != null)
+            {
+                return NormalizeHash(match.Hash);
+            }
+        }
+
+        return null;
+    }
+
+    private static Boolean IsDownloadAlreadyQueued(Exception ex)
+    {
+        if (ex is TorBoxException torBoxException &&
+            (torBoxException.Message.Contains("already queued", StringComparison.OrdinalIgnoreCase) ||
+             (torBoxException.Error?.Contains("already", StringComparison.OrdinalIgnoreCase) ?? false)))
+        {
+            return true;
+        }
+
+        return ex.Message.Contains("already queued", StringComparison.OrdinalIgnoreCase) ||
+               (ex.InnerException != null && IsDownloadAlreadyQueued(ex.InnerException));
+    }
+
+    private static String? TryParseMagnetHash(String magnetLink)
+    {
+        try
+        {
+            return NormalizeHash(MagnetLink.Parse(magnetLink).InfoHashes.V1OrV2.ToHex());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task<String?> TryParseTorrentHash(Byte[] bytes)
+    {
+        try
+        {
+            var torrent = await MonoTorrent.Torrent.LoadAsync(bytes);
+
+            return NormalizeHash(torrent.InfoHashes.V1OrV2.ToHex());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static String NormalizeHash(String? hash)
+    {
+        return String.IsNullOrWhiteSpace(hash) ? "" : hash.Trim().ToLowerInvariant();
     }
 
     private DateTimeOffset? ChangeTimeZone(DateTimeOffset? dateTimeOffset)

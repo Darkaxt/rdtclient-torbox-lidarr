@@ -86,6 +86,108 @@ public class TorBoxDebridClientTest
     }
 
     [Fact]
+    public async Task AddTorrentMagnet_WhenAlreadyQueuedResolvesExistingQueuedTorrent()
+    {
+        // Arrange
+        const String hash = "abcdef0123456789abcdef0123456789abcdef01";
+        var magnetLink = $"magnet:?xt=urn:btih:{hash}&dn=QueuedBook";
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var userApiMock = new Mock<IUserApi>();
+
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object)
+        {
+            CallBase = true
+        };
+
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        torBoxClientMock.Setup(m => m.User).Returns(userApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+        clientMock.Protected().Setup<Task<IEnumerable<TorrentInfoResult>?>>("GetCurrentTorrents").ReturnsAsync(new List<TorrentInfoResult>());
+        clientMock.Protected().Setup<Task<IEnumerable<TorrentInfoResult>?>>("GetQueuedTorrents").ReturnsAsync(new List<TorrentInfoResult>
+        {
+            new()
+            {
+                Id = 456,
+                Hash = hash,
+                Name = "QueuedBook",
+                DownloadState = "queued",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            }
+        });
+
+        userApiMock.Setup(m => m.GetAsync(true, It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(new Response<User>
+                   {
+                       Data = new()
+                       {
+                           Settings = new()
+                           {
+                               SeedTorrents = 5
+                           }
+                       }
+                   });
+
+        torrentsApiMock.Setup(m => m.AddMagnetAsync(magnetLink, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()))
+                       .ThrowsAsync(new Exception("Download already queued"));
+
+        // Act
+        var result = await clientMock.Object.AddTorrentMagnet(magnetLink);
+
+        // Assert
+        Assert.Equal(hash, result);
+        torrentsApiMock.Verify(m => m.AddMagnetAsync(magnetLink, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()), Times.Once);
+        clientMock.Protected().Verify("GetQueuedTorrents", Times.Once());
+    }
+
+    [Fact]
+    public async Task AddTorrentMagnet_WhenAlreadyQueuedCannotResolveThrowsProviderQueuedError()
+    {
+        // Arrange
+        const String hash = "abcdef0123456789abcdef0123456789abcdef01";
+        var magnetLink = $"magnet:?xt=urn:btih:{hash}&dn=QueuedBook";
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var userApiMock = new Mock<IUserApi>();
+
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object)
+        {
+            CallBase = true
+        };
+
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        torBoxClientMock.Setup(m => m.User).Returns(userApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+        clientMock.Protected().Setup<Task<IEnumerable<TorrentInfoResult>?>>("GetCurrentTorrents").ReturnsAsync(new List<TorrentInfoResult>());
+        clientMock.Protected().Setup<Task<IEnumerable<TorrentInfoResult>?>>("GetQueuedTorrents").ReturnsAsync(new List<TorrentInfoResult>());
+
+        userApiMock.Setup(m => m.GetAsync(true, It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(new Response<User>
+                   {
+                       Data = new()
+                       {
+                           Settings = new()
+                           {
+                               SeedTorrents = 5
+                           }
+                       }
+                   });
+
+        torrentsApiMock.Setup(m => m.AddMagnetAsync(magnetLink, 5, false, It.IsAny<String?>(), false, It.IsAny<CancellationToken>()))
+                       .ThrowsAsync(new Exception("Download already queued"));
+
+        // Act
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => clientMock.Object.AddTorrentMagnet(magnetLink));
+
+        // Assert
+        Assert.Contains("provider-queued", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(hash, ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task AddTorrentFile_DisablesTorBoxZipCreation()
     {
         // Arrange

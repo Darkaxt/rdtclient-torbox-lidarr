@@ -249,6 +249,36 @@ public class QBittorrentTest
     }
 
     [Fact]
+    public async Task TorrentInfo_ShouldNotReportError_ForRecoverableProviderQueuedState()
+    {
+        // Arrange
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = Guid.NewGuid(),
+                Hash = "hash1",
+                RdName = "Queued Torrent",
+                RdProgress = 0,
+                RdSize = 1000,
+                RdStatus = TorrentStatus.Queued,
+                Type = DownloadType.Torrent,
+                Error = "provider-queued: RDT/TorBox already has torrent queued"
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        // Act
+        var result = await _qBittorrent.TorrentInfo();
+
+        // Assert
+        Assert.Single(result);
+        Assert.Equal("downloading", result[0].State);
+        Assert.True(result[0].Progress < 1.0f);
+    }
+
+    [Fact]
     public async Task TorrentFileContents_ShouldReturnAllFiles_WithIndexesAndPriority()
     {
         // Arrange

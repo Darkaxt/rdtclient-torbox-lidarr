@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MonoTorrent;
+using System.Globalization;
 using RdtClient.Data.Models.DebridClient;
 using RdtClient.Data.Models.Internal;
 using RdtClient.Service.BackgroundServices;
@@ -138,6 +139,12 @@ public class TorrentsController(ILogger<TorrentsController> logger, Torrents tor
 
         logger.LogDebug($"Add magnet");
 
+        var cooldown = ActiveProviderCooldown();
+        if (cooldown != null)
+        {
+            return cooldown;
+        }
+
         try
         {
             await torrents.AddMagnetToDebridQueue(request.MagnetLink, request.Torrent);
@@ -148,6 +155,28 @@ public class TorrentsController(ILogger<TorrentsController> logger, Torrents tor
         }
 
         return Ok();
+    }
+
+    private ActionResult? ActiveProviderCooldown()
+    {
+        var nextDequeueTime = coordinator.GetMaxNextAllowedAt();
+
+        if (nextDequeueTime == null || nextDequeueTime <= DateTimeOffset.UtcNow)
+        {
+            return null;
+        }
+
+        var secondsRemaining = (nextDequeueTime.Value - DateTimeOffset.UtcNow).TotalSeconds;
+        if (ControllerContext.HttpContext != null)
+        {
+            Response.Headers.RetryAfter = Math.Ceiling(secondsRemaining).ToString(CultureInfo.InvariantCulture);
+        }
+
+        return StatusCode(429, new RateLimitStatus
+        {
+            NextDequeueTime = nextDequeueTime,
+            SecondsRemaining = secondsRemaining
+        });
     }
 
     [HttpPost]

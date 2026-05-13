@@ -317,7 +317,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
                 Upspeed = speed
             };
 
-            if (!String.IsNullOrWhiteSpace(torrent.Error))
+            if (!String.IsNullOrWhiteSpace(torrent.Error) && !IsTransientProviderState(torrent.Error))
             {
                 result.State = "error";
             }
@@ -351,6 +351,19 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
         }
 
         return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;
+    }
+
+    private static Boolean IsTransientProviderState(String? error)
+    {
+        if (String.IsNullOrWhiteSpace(error))
+        {
+            return false;
+        }
+
+        return error.Contains("provider-queued", StringComparison.OrdinalIgnoreCase) ||
+               error.Contains("provider-backoff", StringComparison.OrdinalIgnoreCase) ||
+               error.Contains("download already queued", StringComparison.OrdinalIgnoreCase) ||
+               error.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Boolean SelectedFilesAreMaterialized(Torrent torrent)
