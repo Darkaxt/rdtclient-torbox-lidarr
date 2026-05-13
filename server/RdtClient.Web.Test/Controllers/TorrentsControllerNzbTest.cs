@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
+using RdtClient.Data.Models.Data;
 using RdtClient.Service.Helpers;
 using RdtClient.Service.Services;
 using RdtClient.Web.Controllers;
@@ -39,6 +40,26 @@ public class TorrentsControllerNzbTest
         // Assert
         Assert.IsType<OkResult>(result);
         _torrentsMock.Verify(t => t.AddNzbLinkToDebridQueue(request.NzbLink, request.Torrent), Times.Once);
+    }
+
+    [Fact]
+    public async Task UploadMagnet_WhenCleanupRequired_ReturnsConflict()
+    {
+        // Arrange
+        var request = new TorrentControllerUploadMagnetRequest
+        {
+            MagnetLink = "magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+            Torrent = new Torrent { IncludeRegex = "(?i)^Book/.*\\.mp3$" }
+        };
+        _torrentsMock.Setup(t => t.AddMagnetToDebridQueue(request.MagnetLink, request.Torrent))
+                     .ThrowsAsync(new InvalidOperationException("cleanup is required before adding a selective filtered request"));
+
+        // Act
+        var result = await _controller.UploadMagnet(request);
+
+        // Assert
+        var conflict = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Contains("cleanup", conflict.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

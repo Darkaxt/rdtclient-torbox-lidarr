@@ -159,6 +159,25 @@ public class TorrentData(DataContext dataContext, ILogger<TorrentData>? logger =
         await dataContext.SaveChangesAsync();
     }
 
+    public async Task UpdateIncludeRegexAndReopen(Guid torrentId, String includeRegex)
+    {
+        var dbTorrent = await dataContext.Torrents.FirstOrDefaultAsync(m => m.TorrentId == torrentId);
+
+        if (dbTorrent == null)
+        {
+            return;
+        }
+
+        dbTorrent.IncludeRegex = includeRegex;
+        dbTorrent.Completed = null;
+        dbTorrent.FilesSelected = null;
+        dbTorrent.Error = null;
+        dbTorrent.Retry = null;
+        dbTorrent.RetryCount = 0;
+
+        await dataContext.SaveChangesAsync();
+    }
+
     public async Task Update(Torrent torrent)
     {
         var dbTorrent = await dataContext.Torrents.FirstOrDefaultAsync(m => m.TorrentId == torrent.TorrentId);

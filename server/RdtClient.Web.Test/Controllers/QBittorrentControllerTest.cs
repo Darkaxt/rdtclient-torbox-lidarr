@@ -15,7 +15,12 @@ public class QBittorrentControllerTest
 
     public QBittorrentControllerTest()
     {
-        _qBittorrentMock = new(new Mock<ILogger<QBittorrent>>().Object, null!, null!, null!, null!);
+        _qBittorrentMock = new(new Mock<ILogger<QBittorrent>>().Object,
+                               null!,
+                               null!,
+                               null!,
+                               null!,
+                               new DownloadableFileFilter(new Mock<ILogger<DownloadableFileFilter>>().Object));
 
         _controller = new(
             new Mock<ILogger<QBittorrentController>>().Object,

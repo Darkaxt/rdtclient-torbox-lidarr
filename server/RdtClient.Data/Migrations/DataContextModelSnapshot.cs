@@ -408,6 +408,8 @@ namespace RdtClient.Data.Migrations
 
                     b.HasKey("TorrentId");
 
+                    b.HasIndex("Hash");
+
                     b.ToTable("Torrents");
                 });
 

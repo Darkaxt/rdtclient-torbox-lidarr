@@ -709,14 +709,19 @@ public class TorrentRunner(
                 // Debrid provider finished downloading the torrent, process the file to host.
                 if (torrent.RdStatus == TorrentStatus.Finished)
                 {
-                    // The files are selected but there are no downloads yet, check if debrid provider has generated links yet.
-                    if (torrent.Downloads.Count == 0 && torrent.FilesSelected != null)
+                    // The files are selected; create any missing host download rows. This is idempotent and lets
+                    // expanded include filters materialize additional files on a reused torrent hash.
+                    if (torrent.FilesSelected != null)
                     {
                         Log($"Creating downloads", torrent);
 
                         if (torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadAll)
                         {
-                            await torrents.CreateDownloads(torrent.TorrentId);
+                            var addedDownloads = await torrents.CreateDownloads(torrent.TorrentId);
+                            if (addedDownloads > 0)
+                            {
+                                continue;
+                            }
                         }
                     }
                 }
@@ -890,7 +895,8 @@ public class TorrentRunner(
 
         return raw.StartsWith("queued", StringComparison.OrdinalIgnoreCase) ||
                raw.StartsWith("stalled", StringComparison.OrdinalIgnoreCase) ||
-               raw.StartsWith("checking", StringComparison.OrdinalIgnoreCase);
+               raw.StartsWith("checking", StringComparison.OrdinalIgnoreCase) ||
+               raw.StartsWith("incomplete", StringComparison.OrdinalIgnoreCase);
     }
 
     private void Log(String message, Download? download, Torrent? torrent)

@@ -21,7 +21,12 @@ public class QBittorrentTest
         _torrentsMock = new(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!);
         _authenticationMock = new(null!, null!, null!);
 
-        _qBittorrent = new(_loggerMock.Object, null!, _authenticationMock.Object, _torrentsMock.Object, null!);
+        _qBittorrent = new(_loggerMock.Object,
+                           null!,
+                           _authenticationMock.Object,
+                           _torrentsMock.Object,
+                           null!,
+                           new DownloadableFileFilter(new Mock<ILogger<DownloadableFileFilter>>().Object));
     }
 
     [Fact]
@@ -322,6 +327,110 @@ public class QBittorrentTest
         // Assert
         Assert.NotNull(result);
         Assert.Equal(0f, result![0].Progress);
+    }
+
+    [Fact]
+    public async Task TorrentFileContents_WhenIncludeRegexMatchesOnlyAudio_ReportsOnlyMatchingFilesSelected()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "hash1",
+            Type = DownloadType.Torrent,
+            IncludeRegex = "(?i).*\\.mp3$",
+            RdFiles = JsonSerializer.Serialize(new List<DebridClientFile>
+            {
+                new()
+                {
+                    Id = 1,
+                    Path = "book.mp3",
+                    Bytes = 1000,
+                    Selected = true
+                },
+                new()
+                {
+                    Id = 2,
+                    Path = "book.epub",
+                    Bytes = 100,
+                    Selected = true
+                },
+                new()
+                {
+                    Id = 3,
+                    Path = "book.txt",
+                    Bytes = 10,
+                    Selected = true
+                }
+            })
+        };
+
+        _torrentsMock.Setup(m => m.GetByHash("hash1")).ReturnsAsync(torrent);
+
+        // Act
+        var result = await _qBittorrent.TorrentFileContents("hash1");
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Collection(result!,
+            audio => Assert.Equal(1, audio.Priority),
+            ebook => Assert.Equal(0, ebook.Priority),
+            text => Assert.Equal(0, text.Priority));
+    }
+
+    [Fact]
+    public async Task TorrentFileContents_WhenFilteredDownloadsCompleted_ReportsOnlyFilteredFilesComplete()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "hash1",
+            Type = DownloadType.Torrent,
+            IncludeRegex = "(?i).*\\.mp3$",
+            RdFiles = JsonSerializer.Serialize(new List<DebridClientFile>
+            {
+                new()
+                {
+                    Id = 1,
+                    Path = "book.mp3",
+                    Bytes = 1000,
+                    Selected = true
+                },
+                new()
+                {
+                    Id = 2,
+                    Path = "book.epub",
+                    Bytes = 100,
+                    Selected = true
+                }
+            }),
+            Downloads = new List<Download>
+            {
+                new()
+                {
+                    DownloadId = Guid.NewGuid(),
+                    Completed = DateTimeOffset.UtcNow
+                }
+            }
+        };
+
+        _torrentsMock.Setup(m => m.GetByHash("hash1")).ReturnsAsync(torrent);
+
+        // Act
+        var result = await _qBittorrent.TorrentFileContents("hash1");
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Collection(result!,
+            audio =>
+            {
+                Assert.Equal(1, audio.Priority);
+                Assert.Equal(1f, audio.Progress);
+            },
+            ebook =>
+            {
+                Assert.Equal(0, ebook.Priority);
+                Assert.Equal(0f, ebook.Progress);
+            });
     }
 
     [Fact]

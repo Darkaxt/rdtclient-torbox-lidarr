@@ -86,6 +86,33 @@ public class TorrentRunnerTest
     }
 
     [Fact]
+    public void CountsAgainstProviderDownloadLimit_IgnoresOldTorBoxIncompleteWithoutDownloads()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var previousProvider = Settings.Get.Provider.Provider;
+
+        try
+        {
+            Settings.Get.Provider.Provider = Provider.TorBox;
+
+            var torrent = new Torrent
+            {
+                Added = now.AddMinutes(-20),
+                RdAdded = now.AddMinutes(-10),
+                RdStatus = TorrentStatus.Downloading,
+                RdStatusRaw = "incomplete",
+                RdSpeed = 0
+            };
+
+            Assert.False(TorrentRunner.CountsAgainstProviderDownloadLimit(torrent, now));
+        }
+        finally
+        {
+            Settings.Get.Provider.Provider = previousProvider;
+        }
+    }
+
+    [Fact]
     public void CountsAgainstProviderDownloadLimit_KeepsFreshTorBoxProviderQueuedAsActive()
     {
         var now = DateTimeOffset.UtcNow;

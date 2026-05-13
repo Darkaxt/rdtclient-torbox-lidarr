@@ -138,7 +138,14 @@ public class TorrentsController(ILogger<TorrentsController> logger, Torrents tor
 
         logger.LogDebug($"Add magnet");
 
-        await torrents.AddMagnetToDebridQueue(request.MagnetLink, request.Torrent);
+        try
+        {
+            await torrents.AddMagnetToDebridQueue(request.MagnetLink, request.Torrent);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(ex.Message);
+        }
 
         return Ok();
     }

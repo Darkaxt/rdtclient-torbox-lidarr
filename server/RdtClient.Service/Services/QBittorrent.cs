@@ -1,12 +1,16 @@
 ﻿using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using RdtClient.Data.Enums;
 using RdtClient.Data.Models.Data;
+using RdtClient.Data.Models.DebridClient;
 using RdtClient.Data.Models.QBittorrent;
 
 namespace RdtClient.Service.Services;
 
-public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authentication authentication, Torrents torrents, Downloads downloads)
+public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authentication authentication, Torrents torrents, Downloads downloads, IDownloadableFileFilter fileFilter)
 {
+    private const Int64 TorrentFilesSlowLogThresholdMs = 1000;
+
     public async Task<Boolean> AuthLogin(String userName, String password)
     {
         logger.LogDebug("Auth login");
@@ -366,26 +370,125 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
 
     public async Task<IList<TorrentFileItem>?> TorrentFileContents(String hash)
     {
+        var totalElapsed = Stopwatch.StartNew();
+        var getByHashElapsed = Stopwatch.StartNew();
         var torrent = await torrents.GetByHash(hash);
+        getByHashElapsed.Stop();
 
         if (torrent == null || torrent.Type != DownloadType.Torrent)
         {
+            LogTorrentFileContentsMetrics(hash, torrent, totalElapsed.ElapsedMilliseconds, getByHashElapsed.ElapsedMilliseconds, 0, 0, 0);
+
             return null;
         }
 
-        var progress = SelectedFilesAreMaterialized(torrent) ? 1f : 0f;
+        var parseElapsed = Stopwatch.StartNew();
+        var files = torrent.Files.ToList();
+        parseElapsed.Stop();
 
-        return torrent.Files
-            .Select((file, index) => new TorrentFileItem
-            {
-                Index = index,
-                Name = file.Path,
-                Size = file.Bytes,
-                Progress = file.Selected ? progress : 0f,
-                Priority = file.Selected ? 1 : 0,
-                IsSeed = false
-            })
-            .ToList();
+        var progress = SelectedFilesAreMaterialized(torrent) ? 1f : 0f;
+        var selectedCount = 0;
+        var downloadableCount = 0;
+
+        var result = files
+                     .Select((file, index) =>
+                     {
+                         var selected = IsSelectedForQbFileList(torrent, file);
+
+                         if (file.Selected)
+                         {
+                             selectedCount++;
+                         }
+
+                         if (selected)
+                         {
+                             downloadableCount++;
+                         }
+
+                         return new TorrentFileItem
+                         {
+                             Index = index,
+                             Name = file.Path,
+                             Size = file.Bytes,
+                             Progress = selected ? progress : 0f,
+                             Priority = selected ? 1 : 0,
+                             IsSeed = false
+                         };
+                     })
+                     .ToList();
+
+        LogTorrentFileContentsMetrics(hash,
+                                      torrent,
+                                      totalElapsed.ElapsedMilliseconds,
+                                      getByHashElapsed.ElapsedMilliseconds,
+                                      parseElapsed.ElapsedMilliseconds,
+                                      files.Count,
+                                      selectedCount,
+                                      downloadableCount);
+
+        return result;
+    }
+
+    private Boolean IsSelectedForQbFileList(Torrent torrent, DebridClientFile file)
+    {
+        if (!HasEffectiveFileFilter(torrent))
+        {
+            return file.Selected;
+        }
+
+        return fileFilter.IsDownloadable(torrent, file.Path, file.Bytes);
+    }
+
+    private static Boolean HasEffectiveFileFilter(Torrent torrent)
+    {
+        return !String.IsNullOrWhiteSpace(torrent.IncludeRegex) ||
+               !String.IsNullOrWhiteSpace(torrent.ExcludeRegex) ||
+               torrent.DownloadMinSize > 0;
+    }
+
+    private void LogTorrentFileContentsMetrics(String hash,
+                                               Torrent? torrent,
+                                               Int64 totalElapsedMs,
+                                               Int64 getByHashElapsedMs,
+                                               Int64 rdFilesParseElapsedMs,
+                                               Int32 fileCount,
+                                               Int32 providerSelectedCount,
+                                               Int32 downloadableCount)
+    {
+        if (totalElapsedMs < TorrentFilesSlowLogThresholdMs)
+        {
+            return;
+        }
+
+        logger.LogWarning("Slow qBittorrent torrent file list response for {Hash}: total={TotalElapsedMs}ms getByHash={GetByHashElapsedMs}ms rdFilesParse={RdFilesParseElapsedMs}ms rdFilesLength={RdFilesLength} fileCount={FileCount} providerSelectedCount={ProviderSelectedCount} downloadableCount={DownloadableCount} downloadRowCount={DownloadRowCount} torrentId={TorrentId}",
+                          hash,
+                          totalElapsedMs,
+                          getByHashElapsedMs,
+                          rdFilesParseElapsedMs,
+                          torrent?.RdFiles?.Length ?? 0,
+                          fileCount,
+                          providerSelectedCount,
+                          downloadableCount,
+                          torrent?.Downloads.Count ?? 0,
+                          torrent?.TorrentId);
+    }
+
+    private void LogTorrentFileContentsMetrics(String hash,
+                                               Torrent? torrent,
+                                               Int64 totalElapsedMs,
+                                               Int64 getByHashElapsedMs,
+                                               Int64 rdFilesParseElapsedMs,
+                                               Int32 fileCount,
+                                               Int32 providerSelectedCount)
+    {
+        LogTorrentFileContentsMetrics(hash,
+                                      torrent,
+                                      totalElapsedMs,
+                                      getByHashElapsedMs,
+                                      rdFilesParseElapsedMs,
+                                      fileCount,
+                                      providerSelectedCount,
+                                      0);
     }
 
     public async Task<TorrentProperties?> TorrentProperties(String hash)

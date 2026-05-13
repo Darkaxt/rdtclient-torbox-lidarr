@@ -432,29 +432,30 @@ public class Torrents(
         }
     }
 
-    public async Task CreateDownloads(Guid torrentId)
+    public async Task<Int32> CreateDownloads(Guid torrentId)
     {
         var torrent = await GetById(torrentId);
 
         if (torrent == null)
         {
-            return;
+            return 0;
         }
 
         var downloadInfos = await DebridClient.GetDownloadInfos(torrent);
 
         if (downloadInfos == null)
         {
-            return;
+            return 0;
         }
 
         if (downloadInfos.Count == 0)
         {
             await MarkAllFilesExcluded(torrent);
 
-            return;
+            return 0;
         }
 
+        var added = 0;
         foreach (var downloadInfo in downloadInfos)
         {
             var addResult = await downloads.TryAddForTorrent(torrent.TorrentId, downloadInfo);
@@ -462,12 +463,14 @@ public class Torrents(
             switch (addResult)
             {
                 case DownloadAddResult.Added:
+                    added++;
+                    continue;
                 case DownloadAddResult.AlreadyExists:
                     continue;
                 case DownloadAddResult.TorrentMissing:
                     logger.LogDebug("Stopping download creation because the torrent was deleted concurrently. TorrentId: {torrentId}", torrent.TorrentId);
 
-                    return;
+                    return added;
                 case DownloadAddResult.InvalidInput:
                     logger.LogDebug("Skipping download creation because the provider returned an invalid download link. TorrentId: {torrentId}", torrent.TorrentId);
 
@@ -476,6 +479,8 @@ public class Torrents(
                     throw new ArgumentOutOfRangeException(nameof(addResult), addResult, null);
             }
         }
+
+        return added;
     }
 
     /// <summary>
@@ -951,6 +956,11 @@ public class Torrents(
 
         if (existingTorrent != null)
         {
+            if (!String.IsNullOrWhiteSpace(torrent.IncludeRegex))
+            {
+                return await MergeExistingFilteredTorrent(existingTorrent, torrent.IncludeRegex);
+            }
+
             return await RequeueExistingTorrentIfMaterializedFilesAreMissing(existingTorrent);
         }
 
@@ -963,6 +973,65 @@ public class Torrents(
                                                torrent);
 
         return newTorrent;
+    }
+
+    private async Task<Torrent> MergeExistingFilteredTorrent(Torrent existingTorrent, String includeRegex)
+    {
+        includeRegex = includeRegex.Trim();
+        var existingIncludeRegex = existingTorrent.IncludeRegex?.Trim();
+
+        if (String.IsNullOrWhiteSpace(existingIncludeRegex))
+        {
+            throw new InvalidOperationException($"Existing torrent {existingTorrent.Hash} is unfiltered; cleanup is required before adding a selective filtered request for the same hash.");
+        }
+
+        if (String.Equals(existingIncludeRegex, includeRegex, StringComparison.Ordinal))
+        {
+            return await RequeueExistingTorrentIfMaterializedFilesAreMissing(existingTorrent);
+        }
+
+        var mergedIncludeRegex = MergeIncludeRegex(existingIncludeRegex, includeRegex);
+        Log($"Merging include regex for existing filtered torrent", existingTorrent);
+        await torrentData.UpdateIncludeRegexAndReopen(existingTorrent.TorrentId, mergedIncludeRegex);
+
+        existingTorrent.IncludeRegex = mergedIncludeRegex;
+        existingTorrent.Completed = null;
+        existingTorrent.FilesSelected = null;
+        existingTorrent.Error = null;
+        existingTorrent.RetryCount = 0;
+
+        return await torrentData.GetById(existingTorrent.TorrentId) ?? existingTorrent;
+    }
+
+    private static String MergeIncludeRegex(String first, String second)
+    {
+        first = first.Trim();
+        second = second.Trim();
+
+        if (String.Equals(first, second, StringComparison.Ordinal))
+        {
+            return first;
+        }
+
+        var firstCaseInsensitive = StripLeadingCaseInsensitiveFlag(first);
+        var secondCaseInsensitive = StripLeadingCaseInsensitiveFlag(second);
+
+        if (firstCaseInsensitive.Stripped || secondCaseInsensitive.Stripped)
+        {
+            return $"(?i)(?:{firstCaseInsensitive.Pattern})|(?:{secondCaseInsensitive.Pattern})";
+        }
+
+        return $"(?:{first})|(?:{second})";
+    }
+
+    private static (String Pattern, Boolean Stripped) StripLeadingCaseInsensitiveFlag(String pattern)
+    {
+        if (pattern.StartsWith("(?i)", StringComparison.Ordinal))
+        {
+            return (pattern[4..], true);
+        }
+
+        return (pattern, false);
     }
 
     private async Task<Torrent> RequeueExistingTorrentIfMaterializedFilesAreMissing(Torrent torrent)
