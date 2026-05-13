@@ -113,4 +113,37 @@ public class QBittorrentControllerTest
         _qBittorrentMock.Verify(q => q.TorrentsDelete("slow", true), Times.Once);
         _qBittorrentMock.Verify(q => q.TorrentsDelete("fast", true), Times.Once);
     }
+
+    [Fact]
+    public async Task TorrentsDelete_ContinuesAfterOneHashHangs()
+    {
+        // Arrange
+        var previousTimeout = QBittorrentController.DeletePerHashTimeout;
+        QBittorrentController.DeletePerHashTimeout = TimeSpan.FromMilliseconds(50);
+        try
+        {
+            var neverCompletes = new TaskCompletionSource();
+            _qBittorrentMock.Setup(q => q.TorrentsDelete("hung", true)).Returns(neverCompletes.Task);
+            _qBittorrentMock.Setup(q => q.TorrentsDelete("next", true)).Returns(Task.CompletedTask);
+
+            // Act
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = await _controller.TorrentsDelete(new QBTorrentsDeleteRequest
+            {
+                Hashes = "hung|next",
+                DeleteFiles = true
+            });
+            sw.Stop();
+
+            // Assert
+            Assert.IsType<OkResult>(result);
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"delete took {sw.Elapsed}");
+            _qBittorrentMock.Verify(q => q.TorrentsDelete("hung", true), Times.Once);
+            _qBittorrentMock.Verify(q => q.TorrentsDelete("next", true), Times.Once);
+        }
+        finally
+        {
+            QBittorrentController.DeletePerHashTimeout = previousTimeout;
+        }
+    }
 }

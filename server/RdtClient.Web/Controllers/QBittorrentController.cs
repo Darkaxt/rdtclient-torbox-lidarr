@@ -16,6 +16,8 @@ namespace RdtClient.Web.Controllers;
 [Route("qbittorrent/api/v2")]
 public class QBittorrentController(ILogger<QBittorrentController> logger, QBittorrent qBittorrent, IHttpClientFactory httpClientFactory) : Controller
 {
+    public static TimeSpan DeletePerHashTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
     [AllowAnonymous]
     [Route("/version/api")]
     [HttpGet]
@@ -338,11 +340,24 @@ public class QBittorrentController(ILogger<QBittorrentController> logger, QBitto
 
         var hashes = request.Hashes.Split("|");
 
-        foreach (var hash in hashes)
+        foreach (var hash in hashes.Select(h => h.Trim()).Where(h => !String.IsNullOrWhiteSpace(h)))
         {
+            Task deleteTask;
             try
             {
-                await qBittorrent.TorrentsDelete(hash, request.DeleteFiles);
+                deleteTask = qBittorrent.TorrentsDelete(hash, request.DeleteFiles);
+                _ = deleteTask.ContinueWith(task =>
+                                            logger.LogWarning(task.Exception,
+                                                              "Background qB-compatible torrent delete failed for hash {Hash}",
+                                                              hash),
+                                            TaskContinuationOptions.OnlyOnFaulted);
+                await deleteTask.WaitAsync(DeletePerHashTimeout);
+            }
+            catch (TimeoutException ex)
+            {
+                logger.LogWarning(ex,
+                                  "Timed out waiting for qB-compatible torrent delete hash {Hash}; cleanup may continue in the background",
+                                  hash);
             }
             catch (Exception ex)
             {
