@@ -340,7 +340,14 @@ public class QBittorrentController(ILogger<QBittorrentController> logger, QBitto
 
         foreach (var hash in hashes)
         {
-            await qBittorrent.TorrentsDelete(hash, request.DeleteFiles);
+            try
+            {
+                await qBittorrent.TorrentsDelete(hash, request.DeleteFiles);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to delete qB-compatible torrent hash {Hash}; continuing with remaining hashes", hash);
+            }
         }
 
         return Ok();

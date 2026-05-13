@@ -38,6 +38,8 @@ public class Torrents(
 
     private static readonly SemaphoreSlim TorrentResetLock = new(1, 1);
 
+    public static TimeSpan ProviderDeleteTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     private static readonly JsonSerializerOptions JsonSerializerOptions = new()
     {
         ReferenceHandler = ReferenceHandler.IgnoreCycles
@@ -564,11 +566,21 @@ public class Torrents(
 
             try
             {
-                await DebridClient.Delete(torrent);
+                await DebridClient.Delete(torrent).WaitAsync(ProviderDeleteTimeout);
             }
-            catch
+            catch (TimeoutException ex)
             {
-                // ignored
+                logger.LogWarning(ex,
+                                  "Provider delete timed out for torrent {TorrentId} hash {Hash}; local cleanup will continue",
+                                  torrent.TorrentId,
+                                  torrent.Hash);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                                  "Provider delete failed for torrent {TorrentId} hash {Hash}; local cleanup will continue",
+                                  torrent.TorrentId,
+                                  torrent.Hash);
             }
         }
 

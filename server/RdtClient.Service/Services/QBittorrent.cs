@@ -565,7 +565,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
         await torrents.UpdateFileSelection(hash, fileIds, priority > 0);
     }
 
-    public async Task TorrentsDelete(String hash, Boolean deleteFiles)
+    public virtual async Task TorrentsDelete(String hash, Boolean deleteFiles)
     {
         if (deleteFiles)
         {

@@ -5,12 +5,15 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Moq.Protected;
 using RdtClient.Data.Data;
 using RdtClient.Data.Enums;
 using RdtClient.Data.Models.Data;
 using RdtClient.Data.Models.Internal;
 using RdtClient.Service.Services;
+using RdtClient.Service.Services.DebridClients;
 using RdtClient.Service.Wrappers;
+using TorBoxNET;
 using DownloadClient = RdtClient.Data.Enums.DownloadClient;
 using TorrentsService = RdtClient.Service.Services.Torrents;
 
@@ -426,6 +429,85 @@ public class TorrentsTest
                                                  It.IsAny<DownloadClient>(),
                                                  It.IsAny<Torrent>()),
                                       Times.Once);
+    }
+
+    [Fact]
+    public async Task Delete_WhenProviderDeleteHangs_DeletesLocalDataAndFiles()
+    {
+        // Arrange
+        var previousProvider = Settings.Get.Provider.Provider;
+        var previousDownloadPath = Settings.Get.DownloadClient.DownloadPath;
+        var previousTimeout = TorrentsService.ProviderDeleteTimeout;
+        var downloadRoot = Directory.CreateTempSubdirectory("rdt-delete-test-").FullName;
+        try
+        {
+            Settings.Get.Provider.Provider = Provider.TorBox;
+            Settings.Get.DownloadClient.DownloadPath = downloadRoot;
+            TorrentsService.ProviderDeleteTimeout = TimeSpan.FromMilliseconds(50);
+
+            var mocks = new Mocks();
+            var torrentId = Guid.NewGuid();
+            var torrent = new Torrent
+            {
+                TorrentId = torrentId,
+                Hash = "hash-delete-timeout",
+                RdId = "torbox-id",
+                Category = "bindery",
+                RdName = "Book",
+                Type = DownloadType.Torrent,
+                Downloads = []
+            };
+            var localPath = Path.Combine(downloadRoot, torrent.Category, torrent.RdName);
+            Directory.CreateDirectory(localPath);
+            await File.WriteAllTextAsync(Path.Combine(localPath, "chapter.mp3"), "audio");
+
+            mocks.TorrentDataMock.Setup(t => t.GetById(torrentId)).ReturnsAsync(torrent);
+            mocks.TorrentDataMock.Setup(t => t.UpdateComplete(torrentId, "Torrent deleted", It.IsAny<DateTimeOffset>(), false)).Returns(Task.CompletedTask);
+            mocks.TorrentDataMock.Setup(t => t.Delete(torrentId)).Returns(Task.CompletedTask);
+
+            var torBoxMock = new Mock<TorBoxDebridClient>(null!, null!, null!, null!);
+            var torBoxClientMock = new Mock<ITorBoxNetClient>();
+            var torrentsApiMock = new Mock<ITorrentsApi>();
+            torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+            torBoxMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+            torrentsApiMock.Setup(m => m.GetHashInfoAsync(torrent.Hash, true, It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(new TorrentInfoResult { Id = 12345 });
+            var providerDeleteNeverCompletes = new TaskCompletionSource<Response>();
+            torrentsApiMock.Setup(m => m.ControlAsync("12345", "delete", It.IsAny<CancellationToken>()))
+                           .Returns(providerDeleteNeverCompletes.Task);
+
+            var torrents = new TorrentsService(mocks.TorrentsLoggerMock.Object,
+                                               mocks.TorrentDataMock.Object,
+                                               mocks.DownloadsMock.Object,
+                                               mocks.ProcessFactoryMock.Object,
+                                               new MockFileSystem(),
+                                               mocks.EnricherMock.Object,
+                                               null!,
+                                               null!,
+                                               null!,
+                                               null!,
+                                               torBoxMock.Object);
+
+            // Act
+            var sw = Stopwatch.StartNew();
+            await torrents.Delete(torrentId, true, true, true);
+            sw.Stop();
+
+            // Assert
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"delete took {sw.Elapsed}");
+            mocks.TorrentDataMock.Verify(t => t.Delete(torrentId), Times.Once);
+            Assert.False(Directory.Exists(localPath));
+        }
+        finally
+        {
+            Settings.Get.Provider.Provider = previousProvider;
+            Settings.Get.DownloadClient.DownloadPath = previousDownloadPath;
+            TorrentsService.ProviderDeleteTimeout = previousTimeout;
+            if (Directory.Exists(downloadRoot))
+            {
+                Directory.Delete(downloadRoot, true);
+            }
+        }
     }
 
     [Fact]

@@ -93,4 +93,24 @@ public class QBittorrentControllerTest
         Assert.Single(payload);
         Assert.Equal("hash1", payload[0].Hash);
     }
+
+    [Fact]
+    public async Task TorrentsDelete_ContinuesAfterOneHashFails()
+    {
+        // Arrange
+        _qBittorrentMock.Setup(q => q.TorrentsDelete("slow", true)).ThrowsAsync(new TimeoutException("provider delete timeout"));
+        _qBittorrentMock.Setup(q => q.TorrentsDelete("fast", true)).Returns(Task.CompletedTask);
+
+        // Act
+        var result = await _controller.TorrentsDelete(new QBTorrentsDeleteRequest
+        {
+            Hashes = "slow|fast",
+            DeleteFiles = true
+        });
+
+        // Assert
+        Assert.IsType<OkResult>(result);
+        _qBittorrentMock.Verify(q => q.TorrentsDelete("slow", true), Times.Once);
+        _qBittorrentMock.Verify(q => q.TorrentsDelete("fast", true), Times.Once);
+    }
 }
