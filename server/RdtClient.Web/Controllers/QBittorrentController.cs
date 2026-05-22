@@ -342,22 +342,9 @@ public class QBittorrentController(ILogger<QBittorrentController> logger, QBitto
 
         foreach (var hash in hashes.Select(h => h.Trim()).Where(h => !String.IsNullOrWhiteSpace(h)))
         {
-            Task deleteTask;
             try
             {
-                deleteTask = qBittorrent.TorrentsDelete(hash, request.DeleteFiles);
-                _ = deleteTask.ContinueWith(task =>
-                                            logger.LogWarning(task.Exception,
-                                                              "Background qB-compatible torrent delete failed for hash {Hash}",
-                                                              hash),
-                                            TaskContinuationOptions.OnlyOnFaulted);
-                await deleteTask.WaitAsync(DeletePerHashTimeout);
-            }
-            catch (TimeoutException ex)
-            {
-                logger.LogWarning(ex,
-                                  "Timed out waiting for qB-compatible torrent delete hash {Hash}; cleanup may continue in the background",
-                                  hash);
+                await qBittorrent.TorrentsDelete(hash, request.DeleteFiles);
             }
             catch (Exception ex)
             {
