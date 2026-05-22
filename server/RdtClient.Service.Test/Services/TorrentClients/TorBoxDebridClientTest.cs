@@ -402,7 +402,7 @@ public class TorBoxDebridClientTest
     }
 
     [Fact]
-    public async Task Delete_CallsTorrentsControl_WhenTypeIsTorrent()
+    public async Task Delete_CallsTorBoxCurrentDelete_WhenTypeIsTorrent()
     {
         // Arrange
         var torrent = new Torrent
@@ -422,25 +422,31 @@ public class TorBoxDebridClientTest
         torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
                        .ReturnsAsync(new TorrentInfoResult
                        {
-                           Id = 12345
+                           Id = 12345,
+                           Hash = "torrent-hash",
+                           DownloadState = "stalled (no seeds)"
                        });
+        clientMock.Protected()
+                  .Setup<Task>("ControlTorrentDelete", ItExpr.Is<Int32>(id => id == 12345), ItExpr.Is<Boolean>(queued => queued == false))
+                  .Returns(Task.CompletedTask);
 
         // Act
         await clientMock.Object.Delete(torrent);
 
         // Assert
-        torrentsApiMock.Verify(m => m.ControlAsync("12345", "delete", It.IsAny<CancellationToken>()), Times.Once);
-        torrentsApiMock.Verify(m => m.ControlAsync("torrent-hash", "delete", It.IsAny<CancellationToken>()), Times.Never);
+        clientMock.Protected()
+                  .Verify("ControlTorrentDelete", Times.Once(), ItExpr.Is<Int32>(id => id == 12345), ItExpr.Is<Boolean>(queued => queued == false));
+        torrentsApiMock.Verify(m => m.ControlAsync(It.IsAny<String>(), It.IsAny<String>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
-    public async Task Delete_FallsBackToRdId_WhenTorrentControlIdCannotBeResolved()
+    public async Task Delete_FallsBackToNumericRdId_WhenTorrentControlIdCannotBeResolved()
     {
         // Arrange
         var torrent = new Torrent
         {
             Hash = "torrent-hash",
-            RdId = "torrent-id",
+            RdId = "12345",
             Type = DownloadType.Torrent
         };
 
@@ -453,12 +459,16 @@ public class TorBoxDebridClientTest
 
         torrentsApiMock.Setup(m => m.GetHashInfoAsync("torrent-hash", true, It.IsAny<CancellationToken>()))
                        .ReturnsAsync((TorrentInfoResult?)null);
+        clientMock.Protected()
+                  .Setup<Task>("ControlTorrentDelete", ItExpr.Is<Int32>(id => id == 12345), ItExpr.Is<Boolean>(queued => queued == false))
+                  .Returns(Task.CompletedTask);
 
         // Act
         await clientMock.Object.Delete(torrent);
 
         // Assert
-        torrentsApiMock.Verify(m => m.ControlAsync("torrent-id", "delete", It.IsAny<CancellationToken>()), Times.Once);
+        clientMock.Protected()
+                  .Verify("ControlTorrentDelete", Times.Once(), ItExpr.Is<Int32>(id => id == 12345), ItExpr.Is<Boolean>(queued => queued == false));
     }
 
     [Fact]
@@ -495,13 +505,55 @@ public class TorBoxDebridClientTest
                                Hash = "torrent-hash"
                            }
                        });
+        clientMock.Protected()
+                  .Setup<Task>("ControlTorrentDelete", ItExpr.Is<Int32>(id => id == 67890), ItExpr.Is<Boolean>(queued => queued == false))
+                  .Returns(Task.CompletedTask);
 
         // Act
         await clientMock.Object.Delete(torrent);
 
         // Assert
-        torrentsApiMock.Verify(m => m.ControlAsync("67890", "delete", It.IsAny<CancellationToken>()), Times.Once);
-        torrentsApiMock.Verify(m => m.ControlAsync("torrent-hash", "delete", It.IsAny<CancellationToken>()), Times.Never);
+        clientMock.Protected()
+                  .Verify("ControlTorrentDelete", Times.Once(), ItExpr.Is<Int32>(id => id == 67890), ItExpr.Is<Boolean>(queued => queued == false));
+        torrentsApiMock.Verify(m => m.ControlAsync(It.IsAny<String>(), It.IsAny<String>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Delete_CallsTorBoxQueuedDelete_WhenProviderItemIsQueued()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "queued-hash",
+            RdId = "queued-hash",
+            Type = DownloadType.Torrent
+        };
+
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        torrentsApiMock.Setup(m => m.GetHashInfoAsync("queued-hash", true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new TorrentInfoResult
+                       {
+                           Id = 2681953,
+                           Hash = "queued-hash",
+                           DownloadState = "queued"
+                       });
+        clientMock.Protected()
+                  .Setup<Task>("ControlTorrentDelete", ItExpr.Is<Int32>(id => id == 2681953), ItExpr.Is<Boolean>(queued => queued == true))
+                  .Returns(Task.CompletedTask);
+
+        // Act
+        await clientMock.Object.Delete(torrent);
+
+        // Assert
+        clientMock.Protected()
+                  .Verify("ControlTorrentDelete", Times.Once(), ItExpr.Is<Int32>(id => id == 2681953), ItExpr.Is<Boolean>(queued => queued == true));
+        torrentsApiMock.Verify(m => m.ControlAsync(It.IsAny<String>(), It.IsAny<String>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
