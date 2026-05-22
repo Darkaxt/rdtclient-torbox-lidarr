@@ -845,6 +845,59 @@ public class TorBoxDebridClientTest
     }
 
     [Fact]
+    public async Task GetArchiveWrapperInfo_ReturnsProviderZipUrlWithoutHostDownload()
+    {
+        // Arrange
+        var files = new List<DebridClientFile>
+        {
+            new()
+            {
+                Id = 7,
+                Path = "The Stormlight Archive (1-4 Series Set + Edgedancer) - Brandon Sanderson.zip",
+                Bytes = 19_126_994_190
+            }
+        };
+
+        var torrent = new Torrent
+        {
+            Hash = "test-hash",
+            RdName = "Stormlight package",
+            RdFiles = JsonConvert.SerializeObject(files),
+            IncludeRegex = "^The Stormlight Archive \\[0\\.5\\].*\\.mp3$"
+        };
+
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        torrentsApiMock.Setup(m => m.GetHashInfoAsync("test-hash", true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new TorrentInfoResult
+                       {
+                           Id = 12345
+                       });
+
+        torrentsApiMock.Setup(m => m.RequestDownloadAsync(12345, 7, false, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new Response<String>
+                       {
+                           Data = "https://provider.example/download/package.zip"
+                       });
+
+        // Act
+        var result = await clientMock.Object.GetArchiveWrapperInfo(torrent);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal("test-hash", result.Hash);
+        Assert.Equal("The Stormlight Archive (1-4 Series Set + Edgedancer) - Brandon Sanderson.zip", result.FilePath);
+        Assert.Equal(19_126_994_190, result.Size);
+        Assert.Equal("https://provider.example/download/package.zip", result.DownloadUrl);
+        torrentsApiMock.Verify(m => m.RequestDownloadAsync(12345, 7, false, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task Unrestrict_ParsesFakedlLinksCorrectly_ForIndividualFiles()
     {
         // Arrange

@@ -50,6 +50,25 @@ public class TorrentsController(ILogger<TorrentsController> logger, Torrents tor
     }
 
     [HttpGet]
+    [Route("ArchiveWrapper/{hash}")]
+    public async Task<ActionResult<ArchiveWrapperInfo>> GetArchiveWrapper(String hash)
+    {
+        if (String.IsNullOrWhiteSpace(hash))
+        {
+            return BadRequest();
+        }
+
+        var result = await torrents.GetArchiveWrapperInfo(hash);
+
+        if (result == null)
+        {
+            return NotFound();
+        }
+
+        return Ok(result);
+    }
+
+    [HttpGet]
     [Route("DiskSpaceStatus")]
     public ActionResult<DiskSpaceStatus?> GetDiskSpaceStatus()
     {

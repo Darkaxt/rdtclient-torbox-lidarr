@@ -85,6 +85,23 @@ public class Torrents(
         return torrent;
     }
 
+    public virtual async Task<ArchiveWrapperInfo?> GetArchiveWrapperInfo(String hash)
+    {
+        var torrent = await GetByHash(hash);
+
+        if (torrent == null)
+        {
+            return null;
+        }
+
+        if (Settings.Get.Provider.Provider != Provider.TorBox)
+        {
+            return null;
+        }
+
+        return await torBoxDebridClient.GetArchiveWrapperInfo(torrent);
+    }
+
     public async Task UpdateCategory(String hash, String? category)
     {
         var torrent = await torrentData.GetByHash(hash);

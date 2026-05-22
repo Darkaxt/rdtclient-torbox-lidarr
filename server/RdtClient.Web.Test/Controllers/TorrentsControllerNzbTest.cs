@@ -88,6 +88,31 @@ public class TorrentsControllerNzbTest
     }
 
     [Fact]
+    public async Task GetArchiveWrapperByHash_ReturnsWrapperMetadata()
+    {
+        // Arrange
+        var info = new ArchiveWrapperInfo
+        {
+            Hash = "abcdef0123456789abcdef0123456789abcdef01",
+            FilePath = "Package.zip",
+            FileName = "Package.zip",
+            Size = 19_126_994_190,
+            DownloadUrl = "https://provider.example/download/package.zip"
+        };
+        _torrentsMock.Setup(t => t.GetArchiveWrapperInfo("abcdef0123456789abcdef0123456789abcdef01"))
+                     .ReturnsAsync(info);
+
+        // Act
+        var result = await _controller.GetArchiveWrapper("abcdef0123456789abcdef0123456789abcdef01");
+
+        // Assert
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var value = Assert.IsType<ArchiveWrapperInfo>(ok.Value);
+        Assert.Equal("Package.zip", value.FileName);
+        Assert.Equal(19_126_994_190, value.Size);
+    }
+
+    [Fact]
     public async Task UploadNzbLink_NullRequest_ReturnsBadRequest()
     {
         // Act
