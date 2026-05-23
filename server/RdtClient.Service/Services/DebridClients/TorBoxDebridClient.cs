@@ -385,8 +385,8 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
             return null;
         }
 
-        var torrentId = await HandleErrors(() => GetClient().Torrents.GetHashInfoAsync(torrent.Hash, true));
-        if (torrentId?.Id == null)
+        var downloadTarget = await ResolveTorrentDownloadTarget(torrent);
+        if (downloadTarget is not { Queued: false })
         {
             return null;
         }
@@ -397,7 +397,7 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
             return null;
         }
 
-        var result = await HandleErrors(() => GetClient().Torrents.RequestDownloadAsync(torrentId.Id, (Int32)zipFile.Id, false));
+        var result = await HandleErrors(() => GetClient().Torrents.RequestDownloadAsync(downloadTarget.Value.Id, (Int32)zipFile.Id, false));
         if (String.IsNullOrWhiteSpace(result.Data))
         {
             return null;
@@ -533,6 +533,41 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
             {
                 return new(queuedId.Value, true);
             }
+        }
+
+        return null;
+    }
+
+    private async Task<TorBoxControlTarget?> ResolveTorrentDownloadTarget(Torrent torrent)
+    {
+        if (!String.IsNullOrWhiteSpace(torrent.RdId) && Int32.TryParse(torrent.RdId, NumberStyles.None, CultureInfo.InvariantCulture, out var rdId))
+        {
+            return new(rdId, false);
+        }
+
+        if (String.IsNullOrWhiteSpace(torrent.Hash))
+        {
+            return null;
+        }
+
+        var currentId = await ResolveTorrentControlIdFromList(torrent.Hash, () => GetClient().Torrents.GetCurrentAsync(true));
+        if (currentId != null)
+        {
+            return new(currentId.Value, false);
+        }
+
+        try
+        {
+            var torBoxTorrent = await HandleErrors(() => GetClient().Torrents.GetHashInfoAsync(torrent.Hash, true));
+
+            if (torBoxTorrent is { Id: > 0 } && !IsQueuedTorrent(torBoxTorrent))
+            {
+                return new(torBoxTorrent.Id, false);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not resolve TorBox download id for torrent hash {TorrentHash}", torrent.Hash);
         }
 
         return null;

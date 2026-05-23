@@ -898,6 +898,65 @@ public class TorBoxDebridClientTest
     }
 
     [Fact]
+    public async Task GetArchiveWrapperInfo_PrefersCurrentListForProviderDownloadId()
+    {
+        // Arrange
+        var files = new List<DebridClientFile>
+        {
+            new()
+            {
+                Id = 0,
+                Path = "The Wheel of Time Series by Robert Jordan.zip",
+                Bytes = 13_704_328_675
+            }
+        };
+
+        var torrent = new Torrent
+        {
+            Hash = "1c551767befd7c83e45a79121e3a2291061c4806",
+            RdName = "The Wheel of Time Series by Robert Jordan",
+            RdFiles = JsonConvert.SerializeObject(files),
+            IncludeRegex = "^The Gathering Storm.*\\.m4b$"
+        };
+
+        var torrentsApiMock = new Mock<ITorrentsApi>();
+        var clientMock = new Mock<TorBoxDebridClient>(_loggerMock.Object, _httpClientFactoryMock.Object, _fileFilterMock.Object, _coordinatorMock.Object);
+        var torBoxClientMock = new Mock<ITorBoxNetClient>();
+
+        torBoxClientMock.Setup(m => m.Torrents).Returns(torrentsApiMock.Object);
+        clientMock.Protected().Setup<ITorBoxNetClient>("GetClient", ItExpr.IsAny<String>()).Returns(torBoxClientMock.Object);
+
+        torrentsApiMock.Setup(m => m.GetCurrentAsync(true, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new List<TorrentInfoResult>
+                       {
+                           new()
+                           {
+                               Hash = torrent.Hash,
+                               Id = 54321,
+                               DownloadState = "cached"
+                           }
+                       });
+
+        torrentsApiMock.Setup(m => m.RequestDownloadAsync(54321, 0, false, It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(new Response<String>
+                       {
+                           Data = "https://provider.example/download/wheel.zip"
+                       });
+
+        // Act
+        var result = await clientMock.Object.GetArchiveWrapperInfo(torrent);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(torrent.Hash, result.Hash);
+        Assert.Equal("The Wheel of Time Series by Robert Jordan.zip", result.FilePath);
+        Assert.Equal(13_704_328_675, result.Size);
+        Assert.Equal("https://provider.example/download/wheel.zip", result.DownloadUrl);
+        torrentsApiMock.Verify(m => m.GetHashInfoAsync(torrent.Hash, true, It.IsAny<CancellationToken>()), Times.Never);
+        torrentsApiMock.Verify(m => m.RequestDownloadAsync(54321, 0, false, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task Unrestrict_ParsesFakedlLinksCorrectly_ForIndividualFiles()
     {
         // Arrange
