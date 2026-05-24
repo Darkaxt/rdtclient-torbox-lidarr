@@ -279,6 +279,49 @@ public class QBittorrentTest
     }
 
     [Fact]
+    public async Task TorrentInfo_ShouldNotInventProviderHealth()
+    {
+        // Arrange
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = Guid.NewGuid(),
+                Hash = "hash1",
+                RdName = "Stalled Torrent",
+                RdProgress = 50,
+                RdSize = 1000,
+                RdStatus = TorrentStatus.Downloading,
+                RdStatusRaw = "stalled (no seeds)",
+                RdAvailability = 0,
+                RdPeers = 0,
+                RdSeeders = 0,
+                RdTracker = "udp://tracker.example:1337",
+                RdTrackerMessage = "currently stalled (no seeds)",
+                RdHealthSource = "torbox-mylist",
+                Type = DownloadType.Torrent
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        // Act
+        var result = await _qBittorrent.TorrentInfo();
+
+        // Assert
+        Assert.Single(result);
+        Assert.Equal(0, result[0].Availability);
+        Assert.Equal(0, result[0].NumComplete);
+        Assert.Equal(0, result[0].NumLeechs);
+        Assert.Equal(0, result[0].NumSeeds);
+        Assert.Equal("udp://tracker.example:1337", result[0].Tracker);
+        Assert.Equal("torbox-mylist", result[0].ProviderHealthSource);
+        Assert.True(result[0].ProviderHealthTrusted);
+        Assert.Equal("stalled (no seeds)", result[0].ProviderDownloadState);
+        Assert.Equal("currently stalled (no seeds)", result[0].ProviderTrackerMessage);
+    }
+
+    [Fact]
     public async Task TorrentFileContents_ShouldReturnAllFiles_WithIndexesAndPriority()
     {
         // Arrange
@@ -482,5 +525,58 @@ public class QBittorrentTest
         // Assert
         Assert.NotNull(result);
         Assert.False(result!.IsPrivate);
+    }
+
+    [Fact]
+    public async Task TorrentProperties_ShouldUseProviderHealth()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "hash1",
+            Type = DownloadType.Torrent,
+            Added = DateTimeOffset.UtcNow,
+            RdPeers = 3,
+            RdSeeders = 2
+        };
+
+        _torrentsMock.Setup(m => m.GetByHash("hash1")).ReturnsAsync(torrent);
+
+        // Act
+        var result = await _qBittorrent.TorrentProperties("hash1");
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(3, result!.Peers);
+        Assert.Equal(3, result.PeersTotal);
+        Assert.Equal(2, result.Seeds);
+        Assert.Equal(2, result.SeedsTotal);
+    }
+
+    [Fact]
+    public async Task TorrentsTrackers_ShouldUseProviderTrackerHealth()
+    {
+        // Arrange
+        var torrent = new Torrent
+        {
+            Hash = "hash1",
+            Type = DownloadType.Torrent,
+            RdTracker = "udp://tracker.example:1337",
+            RdTrackerMessage = "no seeds visible",
+            RdPeers = 4,
+            RdHealthSource = "torbox-mylist"
+        };
+
+        _torrentsMock.Setup(m => m.GetByHash("hash1")).ReturnsAsync(torrent);
+
+        // Act
+        var result = await _qBittorrent.TorrentsTrackers("hash1");
+
+        // Assert
+        Assert.Single(result);
+        Assert.Equal("udp://tracker.example:1337", result[0].Url);
+        Assert.Equal("Working", result[0].Status);
+        Assert.Equal(4, result[0].NumPeers);
+        Assert.Equal("no seeds visible", result[0].Msg);
     }
 }

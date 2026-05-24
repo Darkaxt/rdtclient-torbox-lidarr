@@ -135,4 +135,16 @@ public class TorrentInfo
 
     [JsonPropertyName("upspeed")]
     public Int64? Upspeed { get; set; }
+
+    [JsonPropertyName("provider_health_source")]
+    public String? ProviderHealthSource { get; set; }
+
+    [JsonPropertyName("provider_health_trusted")]
+    public Boolean? ProviderHealthTrusted { get; set; }
+
+    [JsonPropertyName("provider_download_state")]
+    public String? ProviderDownloadState { get; set; }
+
+    [JsonPropertyName("provider_tracker_message")]
+    public String? ProviderTrackerMessage { get; set; }
 }

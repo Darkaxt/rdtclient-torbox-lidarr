@@ -126,6 +126,12 @@ public class TorrentData(DataContext dataContext, ILogger<TorrentData>? logger =
         dbTorrent.RdEnded = torrent.RdEnded;
         dbTorrent.RdSpeed = torrent.RdSpeed;
         dbTorrent.RdSeeders = torrent.RdSeeders;
+        dbTorrent.RdAvailability = torrent.RdAvailability;
+        dbTorrent.RdPeers = torrent.RdPeers;
+        dbTorrent.RdTracker = torrent.RdTracker;
+        dbTorrent.RdTrackerMessage = torrent.RdTrackerMessage;
+        dbTorrent.RdHealthSource = torrent.RdHealthSource;
+        dbTorrent.RdHealthUpdatedAt = torrent.RdHealthUpdatedAt;
         dbTorrent.RdFiles = torrent.RdFiles;
 
         await dataContext.SaveChangesAsync();

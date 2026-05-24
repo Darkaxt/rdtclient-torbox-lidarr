@@ -358,10 +358,19 @@ namespace RdtClient.Data.Migrations
                     b.Property<DateTimeOffset?>("RdAdded")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal?>("RdAvailability")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTimeOffset?>("RdEnded")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("RdFiles")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("RdHealthUpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RdHealthSource")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("RdHost")
@@ -374,6 +383,9 @@ namespace RdtClient.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<long?>("RdProgress")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("RdPeers")
                         .HasColumnType("INTEGER");
 
                     b.Property<long?>("RdSeeders")
@@ -392,6 +404,12 @@ namespace RdtClient.Data.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("RdStatusRaw")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RdTracker")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RdTrackerMessage")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset?>("Retry")

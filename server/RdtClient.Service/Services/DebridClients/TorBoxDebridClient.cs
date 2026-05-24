@@ -271,6 +271,12 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
             torrent.RdEnded = rdTorrent.Ended;
             torrent.RdSpeed = rdTorrent.Speed;
             torrent.RdSeeders = rdTorrent.Seeders;
+            torrent.RdAvailability = rdTorrent.Availability;
+            torrent.RdPeers = rdTorrent.Peers;
+            torrent.RdTracker = rdTorrent.Tracker;
+            torrent.RdTrackerMessage = rdTorrent.TrackerMessage;
+            torrent.RdHealthSource = rdTorrent.HealthSource;
+            torrent.RdHealthUpdatedAt = DateTimeOffset.UtcNow;
             torrent.RdStatusRaw = rdTorrent.Status;
 
             if (rdTorrent.Host == "True")
@@ -655,7 +661,12 @@ public class TorBoxDebridClient(ILogger<TorBoxDebridClient> logger, IHttpClientF
             Links = [],
             Ended = ChangeTimeZone(torrent.UpdatedAt),
             Speed = torrent.DownloadSpeed,
-            Seeders = torrent.Seeds
+            Seeders = torrent.Seeds,
+            Availability = (Decimal)torrent.Availability,
+            Peers = torrent.Peers,
+            Tracker = torrent.Tracker,
+            TrackerMessage = torrent.TrackerMessage,
+            HealthSource = "torbox"
         };
     }
 

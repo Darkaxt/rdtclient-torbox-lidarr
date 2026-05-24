@@ -274,7 +274,7 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
                 AddedOn = torrent.Added.ToUnixTimeSeconds(),
                 AmountLeft = bytesTotal - bytesDone,
                 AutoTmm = false,
-                Availability = 2,
+                Availability = torrent.RdAvailability ?? 0,
                 Category = torrent.Category ?? "",
                 Completed = bytesDone,
                 CompletionOn = completedSuccessfully ? torrent.Completed?.ToUnixTimeSeconds() : null,
@@ -292,10 +292,10 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
                 MaxRatio = -1,
                 MaxSeedingTime = -1,
                 Name = torrent.RdName,
-                NumComplete = 10,
-                NumIncomplete = 0,
-                NumLeechs = 1,
-                NumSeeds = torrent.RdSeeders ?? 1,
+                NumComplete = torrent.RdSeeders ?? 0,
+                NumIncomplete = torrent.RdPeers ?? 0,
+                NumLeechs = torrent.RdPeers ?? 0,
+                NumSeeds = torrent.RdSeeders ?? 0,
                 Priority = ++prio,
                 Progress = (Single)progress,
                 Ratio = 1,
@@ -310,11 +310,15 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
                 Tags = "",
                 TimeActive = (Int64)(DateTimeOffset.UtcNow - torrent.Added).TotalSeconds,
                 TotalSize = bytesTotal,
-                Tracker = "udp://tracker.opentrackr.org:1337",
+                Tracker = torrent.RdTracker ?? "",
                 UpLimit = -1,
                 Uploaded = bytesDone,
                 UploadedSession = bytesDone,
-                Upspeed = speed
+                Upspeed = speed,
+                ProviderHealthSource = torrent.RdHealthSource,
+                ProviderHealthTrusted = IsTrustedProviderHealth(torrent.RdHealthSource),
+                ProviderDownloadState = torrent.RdStatusRaw,
+                ProviderTrackerMessage = torrent.RdTrackerMessage
             };
 
             if (!String.IsNullOrWhiteSpace(torrent.Error) && !IsTransientProviderState(torrent.Error))
@@ -547,16 +551,16 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
             LastSeen = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             NbConnections = 0,
             NbConnectionsLimit = 100,
-            Peers = 0,
-            PeersTotal = 2,
+            Peers = torrent.RdPeers ?? 0,
+            PeersTotal = torrent.RdPeers ?? 0,
             PieceSize = bytesTotal,
             PiecesHave = torrent.Downloads.Count(m => m.Completed.HasValue),
             PiecesNum = torrent.Downloads.Count,
             Reannounce = 0,
             SavePath = savePath,
             SeedingTime = 1,
-            Seeds = 100,
-            SeedsTotal = 100,
+            Seeds = torrent.RdSeeders ?? 0,
+            SeedsTotal = torrent.RdSeeders ?? 0,
             ShareRatio = 9999,
             TimeElapsed = (Int64)(DateTimeOffset.UtcNow - torrent.Added).TotalSeconds,
             TotalDownloaded = bytesDone,
@@ -864,11 +868,19 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
         [
             new()
             {
-                Url = $"http://{torrent.RdHost ?? torrent.ClientKind.ToString()}/**".ToLower(),
-                Status = "Working",
-                NumPeers = torrent.RdSeeders ?? 1,
-                Msg = $"Fake Tracker for {torrent.ClientKind}"
+                Url = String.IsNullOrWhiteSpace(torrent.RdTracker)
+                          ? $"provider://{torrent.RdHost ?? torrent.ClientKind.ToString()}".ToLowerInvariant()
+                          : torrent.RdTracker,
+                Status = IsTrustedProviderHealth(torrent.RdHealthSource) ? "Working" : "Unknown",
+                NumPeers = torrent.RdPeers ?? 0,
+                Msg = torrent.RdTrackerMessage ?? torrent.RdStatusRaw ?? ""
             }
         ];
+    }
+
+    private static Boolean IsTrustedProviderHealth(String? healthSource)
+    {
+        return !String.IsNullOrWhiteSpace(healthSource) &&
+               healthSource.StartsWith("torbox", StringComparison.OrdinalIgnoreCase);
     }
 }

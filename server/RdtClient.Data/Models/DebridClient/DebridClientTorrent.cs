@@ -24,4 +24,9 @@ public class DebridClientTorrent
     public DateTimeOffset? Ended { get; set; }
     public Int64? Speed { get; set; }
     public Int64? Seeders { get; set; }
+    public Decimal? Availability { get; set; }
+    public Int64? Peers { get; set; }
+    public String? Tracker { get; set; }
+    public String? TrackerMessage { get; set; }
+    public String? HealthSource { get; set; }
 }

@@ -42,6 +42,12 @@ public class TorrentDto
     public DateTimeOffset? RdEnded { get; set; }
     public Int64? RdSpeed { get; set; }
     public Int64? RdSeeders { get; set; }
+    public Decimal? RdAvailability { get; set; }
+    public Int64? RdPeers { get; set; }
+    public String? RdTracker { get; set; }
+    public String? RdTrackerMessage { get; set; }
+    public String? RdHealthSource { get; set; }
+    public DateTimeOffset? RdHealthUpdatedAt { get; set; }
     public String StatusText { get; set; } = null!;
     public Int32 FilesCount { get; set; }
     public Int32 DownloadsCount { get; set; }
