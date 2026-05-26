@@ -116,6 +116,73 @@ index 17885f5..2d6828b 100644
      [Fact]
      public async Task CreateDownloads_WhenFilterExpanded_AddsMissingSelectedDownloadsWithoutDuplicatingExistingRows()
      {
+diff --git a/server/RdtClient.Service.Test/Services/QBittorrentTest.cs b/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
+index 0be0142..9a69bdb 100644
+--- a/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
++++ b/server/RdtClient.Service.Test/Services/QBittorrentTest.cs
+@@ -144,6 +144,62 @@ public class QBittorrentTest
+         Assert.NotNull(result[0].CompletionOn);
+     }
+ 
++    [Fact]
++    public async Task TorrentInfo_WhenSelectedFilePreStartFailureWasSupersededBySuccessfulDuplicate_ShouldReportComplete()
++    {
++        // Arrange
++        var torrentId = Guid.NewGuid();
++        var completedAt = DateTimeOffset.UtcNow;
++
++        var allTorrents = new List<Torrent>
++        {
++            new()
++            {
++                TorrentId = torrentId,
++                Hash = "hash1",
++                RdName = "Torrent 1",
++                RdProgress = 100,
++                RdSize = 1000,
++                Completed = completedAt,
++                Type = DownloadType.Torrent,
++                IncludeRegex = "(?i)^El Hobbit/El Hobbit\\.m4b$",
++                Downloads = new List<Download>
++                {
++                    new()
++                    {
++                        DownloadId = Guid.NewGuid(),
++                        TorrentId = torrentId,
++                        FileName = "El Hobbit.m4b",
++                        Completed = completedAt.AddSeconds(-10),
++                        RetryCount = 3,
++                        Error = "There was an error processing your request. Please try again later."
++                    },
++                    new()
++                    {
++                        DownloadId = Guid.NewGuid(),
++                        TorrentId = torrentId,
++                        Link = "https://nexus.example/dld/token",
++                        FileName = "El Hobbit.m4b",
++                        DownloadStarted = completedAt.AddMinutes(-1),
++                        DownloadFinished = completedAt.AddSeconds(-5),
++                        Completed = completedAt.AddSeconds(-5)
++                    }
++                }
++            }
++        };
++
++        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
++
++        // Act
++        var result = await _qBittorrent.TorrentInfo();
++
++        // Assert
++        Assert.Single(result);
++        Assert.Equal(1.0f, result[0].Progress);
++        Assert.Equal("pausedUP", result[0].State);
++        Assert.NotNull(result[0].CompletionOn);
++    }
++
+     [Fact]
+     public async Task TorrentInfo_ShouldReport90Percent_WhenRDIs100AndLocalIs80()
+     {
 diff --git a/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs b/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
 index f05ebef..bfa2f67 100644
 --- a/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
@@ -383,6 +450,76 @@ index 0f4c9b5..35ba44c 100644
 +        mocks.TorrentDataMock.Verify(t => t.UpdateComplete(torrentId, null, null, false), Times.Once);
 +    }
  }
+diff --git a/server/RdtClient.Service/Services/QBittorrent.cs b/server/RdtClient.Service/Services/QBittorrent.cs
+index be4b058..a419ed5 100644
+--- a/server/RdtClient.Service/Services/QBittorrent.cs
++++ b/server/RdtClient.Service/Services/QBittorrent.cs
+@@ -349,7 +349,9 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+ 
+         if (torrent.Downloads.Count > 0)
+         {
+-            var allDownloadsCompleted = torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
++            var effectiveDownloads = EffectiveDownloadsForCompletion(torrent);
++            var allDownloadsCompleted = effectiveDownloads.Count > 0 &&
++                                        effectiveDownloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
+ 
+             return allDownloadsCompleted || (rdProgress >= 1.0 && downloadProgress >= 1.0);
+         }
+@@ -379,12 +381,53 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
+ 
+         if (torrent.Downloads.Count > 0)
+         {
+-            return torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
++            var effectiveDownloads = EffectiveDownloadsForCompletion(torrent);
++
++            return effectiveDownloads.Count > 0 &&
++                   effectiveDownloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
+         }
+ 
+         return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;
+     }
+ 
++    private static IReadOnlyList<Download> EffectiveDownloadsForCompletion(Torrent torrent)
++    {
++        if (torrent.Downloads.Count == 0)
++        {
++            return [];
++        }
++
++        var successfulFileNames = torrent.Downloads
++                                         .Where(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error))
++                                         .Select(download => download.FileName?.Trim())
++                                         .Where(fileName => !String.IsNullOrWhiteSpace(fileName))
++                                         .Select(fileName => fileName!)
++                                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
++
++        if (successfulFileNames.Count == 0)
++        {
++            return torrent.Downloads.ToList();
++        }
++
++        return torrent.Downloads
++                      .Where(download => !IsSupersededSelectedFileFailure(torrent, download, successfulFileNames))
++                      .ToList();
++    }
++
++    private static Boolean IsSupersededSelectedFileFailure(Torrent torrent, Download download, ISet<String> successfulFileNames)
++    {
++        if (String.IsNullOrWhiteSpace(torrent.IncludeRegex) ||
++            String.IsNullOrWhiteSpace(download.Error) ||
++            String.IsNullOrWhiteSpace(download.FileName) ||
++            !String.IsNullOrWhiteSpace(download.Link) ||
++            download.DownloadStarted.HasValue)
++        {
++            return false;
++        }
++
++        return successfulFileNames.Contains(download.FileName.Trim());
++    }
++
+     public async Task<IList<TorrentFileItem>?> TorrentFileContents(String hash)
+     {
+         var totalElapsed = Stopwatch.StartNew();
 diff --git a/server/RdtClient.Service/Services/TorrentRunner.cs b/server/RdtClient.Service/Services/TorrentRunner.cs
 index e516080..840dff1 100644
 --- a/server/RdtClient.Service/Services/TorrentRunner.cs
