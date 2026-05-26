@@ -32,7 +32,7 @@ RDTClient database, logs, downloads, or live Lidarr configuration.
 
   ```sh
   RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-  RDTCLIENT_TAG=abb-include-regex-20260508
+  RDTCLIENT_TAG=torbox-unrestrict-retry-20260526
   ```
 
 3. Open RDTClient only from the host or a trusted tunnel and configure your own

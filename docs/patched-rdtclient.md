@@ -10,6 +10,7 @@ these wrapper patches, applied in order:
 4. `patches/rdtclient-requeue-missing-materialized-files-20260505.patch`
 5. `patches/rdtclient-qb-complete-requires-materialized-downloads-20260505.patch`
 6. `patches/rdtclient-include-regex-disables-zip-20260508.patch`
+7. `patches/rdtclient-torbox-unrestrict-retry-20260526.patch`
 
 ## Patch Purpose
 
@@ -49,6 +50,11 @@ validation run:
   `IncludeRegex`, TorBox file downloads are requested individually even if
   `PreferZippedDownloads` is enabled, preventing cached audiobook package rows
   from becoming provider-side zip downloads.
+- Selected-file unrestrict retry: transient TorBox per-file
+  `RequestDownloadAsync`/unrestrict failures are retried before RDT marks the
+  selected child downloads and parent torrent terminal. TorBox include-regex
+  torrents with a zero configured download retry budget now get a default budget
+  of three attempts.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -67,15 +73,16 @@ git apply ../patches/rdtclient-torbox-delete-control-id-20260505.patch
 git apply ../patches/rdtclient-requeue-missing-materialized-files-20260505.patch
 git apply ../patches/rdtclient-qb-complete-requires-materialized-downloads-20260505.patch
 git apply ../patches/rdtclient-include-regex-disables-zip-20260508.patch
+git apply ../patches/rdtclient-torbox-unrestrict-retry-20260526.patch
 docker build --platform linux/arm64/v8 \
-  -t rdtclient-torbox-lidarr:abb-include-regex-20260508 .
+  -t rdtclient-torbox-lidarr:torbox-unrestrict-retry-20260526 .
 ```
 
 Then configure this wrapper:
 
 ```sh
 RDTCLIENT_IMAGE=rdtclient-torbox-lidarr
-RDTCLIENT_TAG=abb-include-regex-20260508
+RDTCLIENT_TAG=torbox-unrestrict-retry-20260526
 docker compose up -d
 ```
 
@@ -99,6 +106,12 @@ The deployed image was built on the Oracle arm64 host. Build-time tests passed:
 - `TorBoxDebridClientTest.GetDownloadInfos_IgnoresPreferZip_WhenIncludeRegexIsSet`:
   proves filtered torrents with `IncludeRegex` return individual TorBox file
   links rather than `/zip`.
+- `TorrentRunnerSlotRecoveryTest.TryRequeuePreStartUnrestrictFailure_WhenTorBoxRequestDownloadIsTransient_RequeuesDownloadAndClearsTorrentCompletion`:
+  proves transient TorBox selected-file unrestrict failures are requeued instead
+  of completed with errors.
+- `TorrentsTest.AddMagnetToDebridQueue_WhenTorBoxIncludeRegexHasZeroDownloadRetries_ShouldStoreDefaultSelectedFileRetryBudget`:
+  proves new TorBox include-regex torrents get a retry budget when the configured
+  budget is zero.
 
 Focused test filter before the full build:
 
