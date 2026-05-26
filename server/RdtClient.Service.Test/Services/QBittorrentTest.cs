@@ -145,6 +145,62 @@ public class QBittorrentTest
     }
 
     [Fact]
+    public async Task TorrentInfo_WhenSelectedFilePreStartFailureWasSupersededBySuccessfulDuplicate_ShouldReportComplete()
+    {
+        // Arrange
+        var torrentId = Guid.NewGuid();
+        var completedAt = DateTimeOffset.UtcNow;
+
+        var allTorrents = new List<Torrent>
+        {
+            new()
+            {
+                TorrentId = torrentId,
+                Hash = "hash1",
+                RdName = "Torrent 1",
+                RdProgress = 100,
+                RdSize = 1000,
+                Completed = completedAt,
+                Type = DownloadType.Torrent,
+                IncludeRegex = "(?i)^El Hobbit/El Hobbit\\.m4b$",
+                Downloads = new List<Download>
+                {
+                    new()
+                    {
+                        DownloadId = Guid.NewGuid(),
+                        TorrentId = torrentId,
+                        FileName = "El Hobbit.m4b",
+                        Completed = completedAt.AddSeconds(-10),
+                        RetryCount = 3,
+                        Error = "There was an error processing your request. Please try again later."
+                    },
+                    new()
+                    {
+                        DownloadId = Guid.NewGuid(),
+                        TorrentId = torrentId,
+                        Link = "https://nexus.example/dld/token",
+                        FileName = "El Hobbit.m4b",
+                        DownloadStarted = completedAt.AddMinutes(-1),
+                        DownloadFinished = completedAt.AddSeconds(-5),
+                        Completed = completedAt.AddSeconds(-5)
+                    }
+                }
+            }
+        };
+
+        _torrentsMock.Setup(m => m.Get()).ReturnsAsync(allTorrents);
+
+        // Act
+        var result = await _qBittorrent.TorrentInfo();
+
+        // Assert
+        Assert.Single(result);
+        Assert.Equal(1.0f, result[0].Progress);
+        Assert.Equal("pausedUP", result[0].State);
+        Assert.NotNull(result[0].CompletionOn);
+    }
+
+    [Fact]
     public async Task TorrentInfo_ShouldReport90Percent_WhenRDIs100AndLocalIs80()
     {
         // Arrange

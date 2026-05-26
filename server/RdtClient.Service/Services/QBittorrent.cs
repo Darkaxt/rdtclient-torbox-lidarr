@@ -349,7 +349,9 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
 
         if (torrent.Downloads.Count > 0)
         {
-            var allDownloadsCompleted = torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
+            var effectiveDownloads = EffectiveDownloadsForCompletion(torrent);
+            var allDownloadsCompleted = effectiveDownloads.Count > 0 &&
+                                        effectiveDownloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
 
             return allDownloadsCompleted || (rdProgress >= 1.0 && downloadProgress >= 1.0);
         }
@@ -379,10 +381,51 @@ public class QBittorrent(ILogger<QBittorrent> logger, Settings settings, Authent
 
         if (torrent.Downloads.Count > 0)
         {
-            return torrent.Downloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
+            var effectiveDownloads = EffectiveDownloadsForCompletion(torrent);
+
+            return effectiveDownloads.Count > 0 &&
+                   effectiveDownloads.All(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error));
         }
 
         return torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone && torrent.RdStatus == TorrentStatus.Finished;
+    }
+
+    private static IReadOnlyList<Download> EffectiveDownloadsForCompletion(Torrent torrent)
+    {
+        if (torrent.Downloads.Count == 0)
+        {
+            return [];
+        }
+
+        var successfulFileNames = torrent.Downloads
+                                         .Where(download => download.Completed.HasValue && String.IsNullOrWhiteSpace(download.Error))
+                                         .Select(download => download.FileName?.Trim())
+                                         .Where(fileName => !String.IsNullOrWhiteSpace(fileName))
+                                         .Select(fileName => fileName!)
+                                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (successfulFileNames.Count == 0)
+        {
+            return torrent.Downloads.ToList();
+        }
+
+        return torrent.Downloads
+                      .Where(download => !IsSupersededSelectedFileFailure(torrent, download, successfulFileNames))
+                      .ToList();
+    }
+
+    private static Boolean IsSupersededSelectedFileFailure(Torrent torrent, Download download, ISet<String> successfulFileNames)
+    {
+        if (String.IsNullOrWhiteSpace(torrent.IncludeRegex) ||
+            String.IsNullOrWhiteSpace(download.Error) ||
+            String.IsNullOrWhiteSpace(download.FileName) ||
+            !String.IsNullOrWhiteSpace(download.Link) ||
+            download.DownloadStarted.HasValue)
+        {
+            return false;
+        }
+
+        return successfulFileNames.Contains(download.FileName.Trim());
     }
 
     public async Task<IList<TorrentFileItem>?> TorrentFileContents(String hash)
