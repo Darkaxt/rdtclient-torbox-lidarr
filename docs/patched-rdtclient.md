@@ -54,7 +54,9 @@ validation run:
   `RequestDownloadAsync`/unrestrict failures are retried before RDT marks the
   selected child downloads and parent torrent terminal. TorBox include-regex
   torrents with a zero configured download retry budget now get a default budget
-  of three attempts.
+  of three attempts. Re-adding an already-terminal selected-file torrent also
+  resets completed child rows that failed before a local download started, so
+  explicit retries do not immediately reuse stale qB-terminal state.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -112,6 +114,9 @@ The deployed image was built on the Oracle arm64 host. Build-time tests passed:
 - `TorrentsTest.AddMagnetToDebridQueue_WhenTorBoxIncludeRegexHasZeroDownloadRetries_ShouldStoreDefaultSelectedFileRetryBudget`:
   proves new TorBox include-regex torrents get a retry budget when the configured
   budget is zero.
+- `TorrentsTest.AddMagnetToDebridQueue_WhenExistingSelectedFileTorrentFailedBeforeDownloadStarted_ShouldResetItForMaterialization`:
+  proves explicit re-adds reset stale selected-file rows that failed before
+  local materialization began.
 
 Focused test filter before the full build:
 

@@ -1,138 +1,3 @@
-diff --git a/server/RdtClient.Service/Services/TorrentRunner.cs b/server/RdtClient.Service/Services/TorrentRunner.cs
-index d8194cf..ccd10e7 100644
---- a/server/RdtClient.Service/Services/TorrentRunner.cs
-+++ b/server/RdtClient.Service/Services/TorrentRunner.cs
-@@ -21,6 +21,7 @@ public class TorrentRunner(
- {
-     private static readonly TimeSpan NonProgressingTorBoxSlotGrace = TimeSpan.FromMinutes(5);
-     private static readonly TimeSpan StaleStartedDownloadTimeout = TimeSpan.FromMinutes(15);
-+    private const Int32 DefaultTorBoxSelectedFileUnrestrictRetryAttempts = 3;
- 
-     public static readonly ConcurrentDictionary<Guid, DownloadClient> ActiveDownloadClients = new();
-     public static readonly ConcurrentDictionary<Guid, UnpackClient> ActiveUnpackClients = new();
-@@ -535,6 +536,11 @@ public class TorrentRunner(
-                     {
-                         logger.LogError(ex, "Cannot unrestrict link: {ex.Message}", ex.Message);
- 
-+                        if (await TryRequeuePreStartUnrestrictFailure(download, downloads, torrents, ex))
-+                        {
-+                            return;
-+                        }
-+
-                         await downloads.UpdateError(download.DownloadId, ex.Message);
-                         await downloads.UpdateCompleted(download.DownloadId, DateTimeOffset.UtcNow);
-                         download.Error = ex.Message;
-@@ -848,6 +854,71 @@ public class TorrentRunner(
-         return recovered;
-     }
- 
-+    public static async Task<Boolean> TryRequeuePreStartUnrestrictFailure(Download download, IDownloads downloads, Torrents torrents, Exception exception)
-+    {
-+        var parentTorrent = download.Torrent;
-+
-+        if (parentTorrent == null ||
-+            !IsTorBoxSelectedFileTorrent(parentTorrent) ||
-+            download.Link != null ||
-+            download.DownloadStarted != null ||
-+            !IsRetryableTorBoxUnrestrictFailure(exception))
-+        {
-+            return false;
-+        }
-+
-+        var retryLimit = EffectiveDownloadRetryAttempts(parentTorrent);
-+
-+        if (download.RetryCount >= retryLimit)
-+        {
-+            return false;
-+        }
-+
-+        await downloads.Reset(download.DownloadId);
-+        await downloads.UpdateRetryCount(download.DownloadId, download.RetryCount + 1);
-+        await torrents.UpdateComplete(parentTorrent.TorrentId, null, null, false);
-+
-+        download.RetryCount += 1;
-+        download.Link = null;
-+        download.Completed = null;
-+        download.Error = null;
-+        parentTorrent.Completed = null;
-+        parentTorrent.Error = null;
-+
-+        return true;
-+    }
-+
-+    public static Int32 EffectiveDownloadRetryAttempts(Torrent torrent)
-+    {
-+        if (torrent.DownloadRetryAttempts > 0)
-+        {
-+            return torrent.DownloadRetryAttempts;
-+        }
-+
-+        return IsTorBoxSelectedFileTorrent(torrent) ? DefaultTorBoxSelectedFileUnrestrictRetryAttempts : torrent.DownloadRetryAttempts;
-+    }
-+
-+    private static Boolean IsTorBoxSelectedFileTorrent(Torrent torrent)
-+    {
-+        return !String.IsNullOrWhiteSpace(torrent.IncludeRegex) &&
-+               (torrent.ClientKind == Provider.TorBox || Settings.Get.Provider.Provider == Provider.TorBox);
-+    }
-+
-+    private static Boolean IsRetryableTorBoxUnrestrictFailure(Exception exception)
-+    {
-+        var message = exception.ToString();
-+
-+        return message.Contains("please try again later", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains("too many requests", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains(" 502", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains(" 503", StringComparison.OrdinalIgnoreCase) ||
-+               message.Contains(" 504", StringComparison.OrdinalIgnoreCase);
-+    }
-+
- 
-     public static Boolean CountsAgainstProviderDownloadLimit(Torrent torrent, DateTimeOffset now)
-     {
-diff --git a/server/RdtClient.Service/Services/Torrents.cs b/server/RdtClient.Service/Services/Torrents.cs
-index a52846b..b6ebe0a 100644
---- a/server/RdtClient.Service/Services/Torrents.cs
-+++ b/server/RdtClient.Service/Services/Torrents.cs
-@@ -848,7 +848,7 @@ public class Torrents(
-         await torrentData.UpdateComplete(download.TorrentId, null, null, false);
-     }
- 
--    public async Task UpdateComplete(Guid torrentId, String? error, DateTimeOffset datetime, Boolean retry)
-+    public async Task UpdateComplete(Guid torrentId, String? error, DateTimeOffset? datetime, Boolean retry)
-     {
-         await torrentData.UpdateComplete(torrentId, error, datetime, retry);
-     }
-@@ -949,6 +949,8 @@ public class Torrents(
-                                           DownloadType downloadType,
-                                           Torrent torrent)
-     {
-+        EnsureSelectedFileRetryBudget(torrent);
-+
-         var existingTorrent = await torrentData.GetByHash(infoHash);
- 
-         if (existingTorrent != null)
-@@ -967,6 +969,16 @@ public class Torrents(
-         return newTorrent;
-     }
- 
-+    private static void EnsureSelectedFileRetryBudget(Torrent torrent)
-+    {
-+        var retryAttempts = TorrentRunner.EffectiveDownloadRetryAttempts(torrent);
-+
-+        if (retryAttempts > torrent.DownloadRetryAttempts)
-+        {
-+            torrent.DownloadRetryAttempts = retryAttempts;
-+        }
-+    }
-+
-     private async Task<Torrent> RequeueExistingTorrentIfMaterializedFilesAreMissing(Torrent torrent)
-     {
-         if (!torrent.Completed.HasValue || torrent.HostDownloadAction == TorrentHostDownloadAction.DownloadNone || torrent.Downloads.Count == 0)
 diff --git a/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs b/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
 index f05ebef..bfa2f67 100644
 --- a/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
@@ -267,11 +132,11 @@ index f05ebef..bfa2f67 100644
 +    }
  }
 diff --git a/server/RdtClient.Service.Test/Services/TorrentsTest.cs b/server/RdtClient.Service.Test/Services/TorrentsTest.cs
-index 9054371..477a83b 100644
+index 0f4c9b5..35ba44c 100644
 --- a/server/RdtClient.Service.Test/Services/TorrentsTest.cs
 +++ b/server/RdtClient.Service.Test/Services/TorrentsTest.cs
-@@ -438,6 +438,64 @@ public class TorrentsTest
-                                      Times.Once);
+@@ -431,6 +431,64 @@ public class TorrentsTest
+                                       Times.Once);
      }
  
 +    [Fact]
@@ -333,5 +198,239 @@ index 9054371..477a83b 100644
 +    }
 +
      [Fact]
-     public async Task Delete_WhenDownloadIsActive_RemovesActiveDownloadBeforeDeletingData()
+     public async Task Delete_WhenProviderDeleteHangs_DeletesLocalDataAndFiles()
      {
+@@ -570,4 +628,64 @@ public class TorrentsTest
+         mocks.DownloadsMock.Verify(d => d.Reset(downloadId), Times.Once);
+         mocks.TorrentDataMock.Verify(t => t.UpdateComplete(torrentId, null, null, false), Times.Once);
+     }
++
++    [Fact]
++    public async Task AddMagnetToDebridQueue_WhenExistingSelectedFileTorrentFailedBeforeDownloadStarted_ShouldResetItForMaterialization()
++    {
++        // Arrange
++        var mocks = new Mocks();
++        var torrentId = Guid.NewGuid();
++        var downloadId = Guid.NewGuid();
++        var hash = "0123456789abcdef0123456789abcdef01234567";
++        var magnet = $"magnet:?xt=urn:btih:{hash}&dn=Book";
++        var includeRegex = "^El Hobbit/El Hobbit\\.m4b$";
++
++        var existingTorrent = new Torrent
++        {
++            TorrentId = torrentId,
++            Hash = hash,
++            Category = "bindery",
++            RdName = "Book",
++            Completed = DateTimeOffset.UtcNow,
++            HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
++            IncludeRegex = includeRegex,
++            Type = DownloadType.Torrent,
++            Downloads = new List<Download>
++            {
++                new()
++                {
++                    DownloadId = downloadId,
++                    TorrentId = torrentId,
++                    FileName = "El Hobbit.m4b",
++                    Completed = DateTimeOffset.UtcNow,
++                    Error = "There was an error processing your request. Please try again later."
++                }
++            }
++        };
++
++        mocks.EnricherMock.Setup(e => e.EnrichMagnetLink(magnet)).ReturnsAsync(magnet);
++        mocks.TorrentDataMock.Setup(t => t.GetByHash(It.IsAny<String>())).ReturnsAsync(existingTorrent);
++        mocks.TorrentDataMock.Setup(t => t.GetById(torrentId)).ReturnsAsync(existingTorrent);
++        mocks.TorrentDataMock.Setup(t => t.UpdateComplete(torrentId, null, null, false)).Returns(Task.CompletedTask);
++        mocks.DownloadsMock.Setup(d => d.Reset(downloadId)).Returns(Task.CompletedTask);
++
++        var torrents = new TorrentsService(mocks.TorrentsLoggerMock.Object,
++                                           mocks.TorrentDataMock.Object,
++                                           mocks.DownloadsMock.Object,
++                                           mocks.ProcessFactoryMock.Object,
++                                           new MockFileSystem(),
++                                           mocks.EnricherMock.Object,
++                                           null!,
++                                           null!,
++                                           null!,
++                                           null!,
++                                           null!);
++
++        // Act
++        await torrents.AddMagnetToDebridQueue(magnet, new Torrent { IncludeRegex = includeRegex });
++
++        // Assert
++        mocks.DownloadsMock.Verify(d => d.Reset(downloadId), Times.Once);
++        mocks.TorrentDataMock.Verify(t => t.UpdateComplete(torrentId, null, null, false), Times.Once);
++    }
+ }
+diff --git a/server/RdtClient.Service/Services/TorrentRunner.cs b/server/RdtClient.Service/Services/TorrentRunner.cs
+index e516080..840dff1 100644
+--- a/server/RdtClient.Service/Services/TorrentRunner.cs
++++ b/server/RdtClient.Service/Services/TorrentRunner.cs
+@@ -21,6 +21,7 @@ public class TorrentRunner(
+ {
+     private static readonly TimeSpan NonProgressingTorBoxSlotGrace = TimeSpan.FromMinutes(5);
+     private static readonly TimeSpan StaleStartedDownloadTimeout = TimeSpan.FromMinutes(15);
++    private const Int32 DefaultTorBoxSelectedFileUnrestrictRetryAttempts = 3;
+ 
+     public static readonly ConcurrentDictionary<Guid, DownloadClient> ActiveDownloadClients = new();
+     public static readonly ConcurrentDictionary<Guid, UnpackClient> ActiveUnpackClients = new();
+@@ -535,6 +536,11 @@ public class TorrentRunner(
+                     {
+                         logger.LogError(ex, "Cannot unrestrict link: {ex.Message}", ex.Message);
+ 
++                        if (await TryRequeuePreStartUnrestrictFailure(download, downloads, torrents, ex))
++                        {
++                            return;
++                        }
++
+                         await downloads.UpdateError(download.DownloadId, ex.Message);
+                         await downloads.UpdateCompleted(download.DownloadId, DateTimeOffset.UtcNow);
+                         download.Error = ex.Message;
+@@ -855,6 +861,71 @@ public class TorrentRunner(
+         return recovered;
+     }
+ 
++    public static async Task<Boolean> TryRequeuePreStartUnrestrictFailure(Download download, IDownloads downloads, Torrents torrents, Exception exception)
++    {
++        var parentTorrent = download.Torrent;
++
++        if (parentTorrent == null ||
++            !IsTorBoxSelectedFileTorrent(parentTorrent) ||
++            download.Link != null ||
++            download.DownloadStarted != null ||
++            !IsRetryableTorBoxUnrestrictFailure(exception))
++        {
++            return false;
++        }
++
++        var retryLimit = EffectiveDownloadRetryAttempts(parentTorrent);
++
++        if (download.RetryCount >= retryLimit)
++        {
++            return false;
++        }
++
++        await downloads.Reset(download.DownloadId);
++        await downloads.UpdateRetryCount(download.DownloadId, download.RetryCount + 1);
++        await torrents.UpdateComplete(parentTorrent.TorrentId, null, null, false);
++
++        download.RetryCount += 1;
++        download.Link = null;
++        download.Completed = null;
++        download.Error = null;
++        parentTorrent.Completed = null;
++        parentTorrent.Error = null;
++
++        return true;
++    }
++
++    public static Int32 EffectiveDownloadRetryAttempts(Torrent torrent)
++    {
++        if (torrent.DownloadRetryAttempts > 0)
++        {
++            return torrent.DownloadRetryAttempts;
++        }
++
++        return IsTorBoxSelectedFileTorrent(torrent) ? DefaultTorBoxSelectedFileUnrestrictRetryAttempts : torrent.DownloadRetryAttempts;
++    }
++
++    private static Boolean IsTorBoxSelectedFileTorrent(Torrent torrent)
++    {
++        return !String.IsNullOrWhiteSpace(torrent.IncludeRegex) &&
++               (torrent.ClientKind == Provider.TorBox || Settings.Get.Provider.Provider == Provider.TorBox);
++    }
++
++    private static Boolean IsRetryableTorBoxUnrestrictFailure(Exception exception)
++    {
++        var message = exception.ToString();
++
++        return message.Contains("please try again later", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("too many requests", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains(" 502", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains(" 503", StringComparison.OrdinalIgnoreCase) ||
++               message.Contains(" 504", StringComparison.OrdinalIgnoreCase);
++    }
++
+     public static Boolean CountsAgainstProviderDownloadLimit(Torrent torrent, DateTimeOffset now)
+     {
+         if (torrent.RdStatus is null or TorrentStatus.Queued or TorrentStatus.Finished or TorrentStatus.Error)
+diff --git a/server/RdtClient.Service/Services/Torrents.cs b/server/RdtClient.Service/Services/Torrents.cs
+index 27341c3..4031ad6 100644
+--- a/server/RdtClient.Service/Services/Torrents.cs
++++ b/server/RdtClient.Service/Services/Torrents.cs
+@@ -880,7 +880,7 @@ public class Torrents(
+         await torrentData.UpdateComplete(download.TorrentId, null, null, false);
+     }
+ 
+-    public async Task UpdateComplete(Guid torrentId, String? error, DateTimeOffset datetime, Boolean retry)
++    public async Task UpdateComplete(Guid torrentId, String? error, DateTimeOffset? datetime, Boolean retry)
+     {
+         await torrentData.UpdateComplete(torrentId, error, datetime, retry);
+     }
+@@ -981,6 +981,8 @@ public class Torrents(
+                                           DownloadType downloadType,
+                                           Torrent torrent)
+     {
++        EnsureSelectedFileRetryBudget(torrent);
++
+         var existingTorrent = await torrentData.GetByHash(infoHash);
+ 
+         if (existingTorrent != null)
+@@ -1004,6 +1006,16 @@ public class Torrents(
+         return newTorrent;
+     }
+ 
++    private static void EnsureSelectedFileRetryBudget(Torrent torrent)
++    {
++        var retryAttempts = TorrentRunner.EffectiveDownloadRetryAttempts(torrent);
++
++        if (retryAttempts > torrent.DownloadRetryAttempts)
++        {
++            torrent.DownloadRetryAttempts = retryAttempts;
++        }
++    }
++
+     private async Task<Torrent> MergeExistingFilteredTorrent(Torrent existingTorrent, String includeRegex)
+     {
+         includeRegex = includeRegex.Trim();
+@@ -1072,7 +1084,7 @@ public class Torrents(
+ 
+         var staleDownloads = torrent.Downloads
+                                     .Where(download => download.Completed.HasValue)
+-                                    .Where(download => !CompletedDownloadFileExists(torrent, download))
++                                    .Where(download => CompletedDownloadNeedsRequeue(torrent, download))
+                                     .ToList();
+ 
+         if (staleDownloads.Count == 0)
+@@ -1105,6 +1117,24 @@ public class Torrents(
+         return await torrentData.GetById(torrent.TorrentId) ?? torrent;
+     }
+ 
++    private Boolean CompletedDownloadNeedsRequeue(Torrent torrent, Download download)
++    {
++        if (IsPreStartSelectedFileMaterializationFailure(torrent, download))
++        {
++            return true;
++        }
++
++        return !CompletedDownloadFileExists(torrent, download);
++    }
++
++    private static Boolean IsPreStartSelectedFileMaterializationFailure(Torrent torrent, Download download)
++    {
++        return !String.IsNullOrWhiteSpace(torrent.IncludeRegex) &&
++               !String.IsNullOrWhiteSpace(download.Error) &&
++               String.IsNullOrWhiteSpace(download.Link) &&
++               !download.DownloadStarted.HasValue;
++    }
++
+     private Boolean CompletedDownloadFileExists(Torrent torrent, Download download)
+     {
+         var relativePath = DownloadHelper.GetDownloadPath(torrent, download);
