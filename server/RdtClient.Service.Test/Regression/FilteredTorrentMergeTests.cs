@@ -91,6 +91,71 @@ public class FilteredTorrentMergeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpdateComplete_WhenSelectedFilePreStartFailureWasSupersededBySuccessfulDuplicate_DoesNotPoisonParent()
+    {
+        var torrentId = Guid.NewGuid();
+
+        await using (var context = CreateContext())
+        {
+            context.Torrents.Add(new Torrent
+            {
+                TorrentId = torrentId,
+                Hash = Hash,
+                Added = DateTimeOffset.UtcNow.AddMinutes(-10),
+                RdId = Hash,
+                RdName = "Collection",
+                RdStatus = TorrentStatus.Finished,
+                RdStatusRaw = "completed",
+                RdProgress = 100,
+                HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
+                Type = DownloadType.Torrent,
+                DownloadClient = DownloadClient.Bezzad,
+                IncludeRegex = "(?i)^El Hobbit/El Hobbit\\.m4b$",
+                Downloads =
+                [
+                    new()
+                    {
+                        DownloadId = Guid.NewGuid(),
+                        Path = "https://torbox.app/fakedl/31761821/9",
+                        FileName = "El Hobbit.m4b",
+                        Added = DateTimeOffset.UtcNow.AddMinutes(-3),
+                        DownloadQueued = DateTimeOffset.UtcNow.AddMinutes(-3),
+                        Completed = DateTimeOffset.UtcNow.AddMinutes(-2),
+                        RetryCount = 3,
+                        Error = "There was an error processing your request. Please try again later."
+                    },
+                    new()
+                    {
+                        DownloadId = Guid.NewGuid(),
+                        Path = "https://nexus.example/dld/token",
+                        Link = "https://nexus.example/dld/token",
+                        FileName = "El Hobbit.m4b",
+                        Added = DateTimeOffset.UtcNow.AddMinutes(-1),
+                        DownloadQueued = DateTimeOffset.UtcNow.AddMinutes(-1),
+                        DownloadStarted = DateTimeOffset.UtcNow.AddSeconds(-50),
+                        DownloadFinished = DateTimeOffset.UtcNow.AddSeconds(-5),
+                        Completed = DateTimeOffset.UtcNow.AddSeconds(-5)
+                    }
+                ]
+            });
+            await context.SaveChangesAsync();
+        }
+
+        await using (var context = CreateContext())
+        {
+            var torrentData = new TorrentData(context);
+            await torrentData.UpdateComplete(torrentId, null, DateTimeOffset.UtcNow, true);
+        }
+
+        await using (var context = CreateContext())
+        {
+            var torrent = await context.Torrents.SingleAsync(m => m.TorrentId == torrentId);
+            Assert.NotNull(torrent.Completed);
+            Assert.Null(torrent.Error);
+        }
+    }
+
+    [Fact]
     public async Task CreateDownloads_WhenFilterExpanded_AddsMissingSelectedDownloadsWithoutDuplicatingExistingRows()
     {
         var torrentId = Guid.NewGuid();

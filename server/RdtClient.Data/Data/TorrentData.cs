@@ -231,7 +231,16 @@ public class TorrentData(DataContext dataContext, ILogger<TorrentData>? logger =
         if (String.IsNullOrWhiteSpace(error))
         {
             var downloads = await dataContext.Downloads.AsNoTracking().Where(m => m.TorrentId == torrentId).ToListAsync();
-            var downloadWithErrors = downloads.Where(m => !String.IsNullOrWhiteSpace(m.Error)).ToList();
+            var successfulFileNames = downloads
+                                      .Where(m => m.Completed.HasValue && String.IsNullOrWhiteSpace(m.Error))
+                                      .Select(m => m.FileName?.Trim())
+                                      .Where(m => !String.IsNullOrWhiteSpace(m))
+                                      .Select(m => m!)
+                                      .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var downloadWithErrors = downloads
+                                     .Where(m => !String.IsNullOrWhiteSpace(m.Error))
+                                     .Where(m => !IsSupersededSelectedFileFailure(dbTorrent, m, successfulFileNames))
+                                     .ToList();
 
             if (downloadWithErrors.Count > 0)
             {
@@ -252,6 +261,19 @@ public class TorrentData(DataContext dataContext, ILogger<TorrentData>? logger =
         dbTorrent.Error = error;
 
         await dataContext.SaveChangesAsync();
+    }
+
+    private static Boolean IsSupersededSelectedFileFailure(Torrent torrent, Download download, ISet<String> successfulFileNames)
+    {
+        if (String.IsNullOrWhiteSpace(torrent.IncludeRegex) ||
+            String.IsNullOrWhiteSpace(download.FileName) ||
+            !String.IsNullOrWhiteSpace(download.Link) ||
+            download.DownloadStarted.HasValue)
+        {
+            return false;
+        }
+
+        return successfulFileNames.Contains(download.FileName.Trim());
     }
 
     public async Task UpdateFilesSelected(Guid torrentId, DateTimeOffset datetime)
