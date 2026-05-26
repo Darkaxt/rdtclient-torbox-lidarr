@@ -56,7 +56,9 @@ validation run:
   torrents with a zero configured download retry budget now get a default budget
   of three attempts. Re-adding an already-terminal selected-file torrent also
   resets completed child rows that failed before a local download started, so
-  explicit retries do not immediately reuse stale qB-terminal state.
+  explicit retries do not immediately reuse stale qB-terminal state. If a
+  re-add later creates successful duplicate child rows for the same selected
+  files, the old pre-start failures no longer poison parent completion.
 
 `Provider:MaxParallelDownloads` should stay at `1` for this deployment because
 TorBox rate limiting was already observed.
@@ -117,6 +119,9 @@ The deployed image was built on the Oracle arm64 host. Build-time tests passed:
 - `TorrentsTest.AddMagnetToDebridQueue_WhenExistingSelectedFileTorrentFailedBeforeDownloadStarted_ShouldResetItForMaterialization`:
   proves explicit re-adds reset stale selected-file rows that failed before
   local materialization began.
+- `FilteredTorrentMergeTests.UpdateComplete_WhenSelectedFilePreStartFailureWasSupersededBySuccessfulDuplicate_DoesNotPoisonParent`:
+  proves successful duplicate child rows override old pre-start selected-file
+  failures during parent completion accounting.
 
 Focused test filter before the full build:
 

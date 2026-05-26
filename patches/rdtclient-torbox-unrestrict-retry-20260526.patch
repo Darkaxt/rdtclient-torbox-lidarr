@@ -1,3 +1,121 @@
+diff --git a/server/RdtClient.Data/Data/TorrentData.cs b/server/RdtClient.Data/Data/TorrentData.cs
+index 7b97be6..d2fcc72 100644
+--- a/server/RdtClient.Data/Data/TorrentData.cs
++++ b/server/RdtClient.Data/Data/TorrentData.cs
+@@ -231,7 +231,16 @@ public class TorrentData(DataContext dataContext, ILogger<TorrentData>? logger =
+         if (String.IsNullOrWhiteSpace(error))
+         {
+             var downloads = await dataContext.Downloads.AsNoTracking().Where(m => m.TorrentId == torrentId).ToListAsync();
+-            var downloadWithErrors = downloads.Where(m => !String.IsNullOrWhiteSpace(m.Error)).ToList();
++            var successfulFileNames = downloads
++                                      .Where(m => m.Completed.HasValue && String.IsNullOrWhiteSpace(m.Error))
++                                      .Select(m => m.FileName?.Trim())
++                                      .Where(m => !String.IsNullOrWhiteSpace(m))
++                                      .Select(m => m!)
++                                      .ToHashSet(StringComparer.OrdinalIgnoreCase);
++            var downloadWithErrors = downloads
++                                     .Where(m => !String.IsNullOrWhiteSpace(m.Error))
++                                     .Where(m => !IsSupersededSelectedFileFailure(dbTorrent, m, successfulFileNames))
++                                     .ToList();
+ 
+             if (downloadWithErrors.Count > 0)
+             {
+@@ -254,6 +263,19 @@ public class TorrentData(DataContext dataContext, ILogger<TorrentData>? logger =
+         await dataContext.SaveChangesAsync();
+     }
+ 
++    private static Boolean IsSupersededSelectedFileFailure(Torrent torrent, Download download, ISet<String> successfulFileNames)
++    {
++        if (String.IsNullOrWhiteSpace(torrent.IncludeRegex) ||
++            String.IsNullOrWhiteSpace(download.FileName) ||
++            !String.IsNullOrWhiteSpace(download.Link) ||
++            download.DownloadStarted.HasValue)
++        {
++            return false;
++        }
++
++        return successfulFileNames.Contains(download.FileName.Trim());
++    }
++
+     public async Task UpdateFilesSelected(Guid torrentId, DateTimeOffset datetime)
+     {
+         var dbTorrent = await dataContext.Torrents.FirstOrDefaultAsync(m => m.TorrentId == torrentId);
+diff --git a/server/RdtClient.Service.Test/Regression/FilteredTorrentMergeTests.cs b/server/RdtClient.Service.Test/Regression/FilteredTorrentMergeTests.cs
+index 17885f5..2d6828b 100644
+--- a/server/RdtClient.Service.Test/Regression/FilteredTorrentMergeTests.cs
++++ b/server/RdtClient.Service.Test/Regression/FilteredTorrentMergeTests.cs
+@@ -90,6 +90,71 @@ public class FilteredTorrentMergeTests : IAsyncLifetime
+         Assert.Contains(Hash, ex.Message, StringComparison.OrdinalIgnoreCase);
+     }
+ 
++    [Fact]
++    public async Task UpdateComplete_WhenSelectedFilePreStartFailureWasSupersededBySuccessfulDuplicate_DoesNotPoisonParent()
++    {
++        var torrentId = Guid.NewGuid();
++
++        await using (var context = CreateContext())
++        {
++            context.Torrents.Add(new Torrent
++            {
++                TorrentId = torrentId,
++                Hash = Hash,
++                Added = DateTimeOffset.UtcNow.AddMinutes(-10),
++                RdId = Hash,
++                RdName = "Collection",
++                RdStatus = TorrentStatus.Finished,
++                RdStatusRaw = "completed",
++                RdProgress = 100,
++                HostDownloadAction = TorrentHostDownloadAction.DownloadAll,
++                Type = DownloadType.Torrent,
++                DownloadClient = DownloadClient.Bezzad,
++                IncludeRegex = "(?i)^El Hobbit/El Hobbit\\.m4b$",
++                Downloads =
++                [
++                    new()
++                    {
++                        DownloadId = Guid.NewGuid(),
++                        Path = "https://torbox.app/fakedl/31761821/9",
++                        FileName = "El Hobbit.m4b",
++                        Added = DateTimeOffset.UtcNow.AddMinutes(-3),
++                        DownloadQueued = DateTimeOffset.UtcNow.AddMinutes(-3),
++                        Completed = DateTimeOffset.UtcNow.AddMinutes(-2),
++                        RetryCount = 3,
++                        Error = "There was an error processing your request. Please try again later."
++                    },
++                    new()
++                    {
++                        DownloadId = Guid.NewGuid(),
++                        Path = "https://nexus.example/dld/token",
++                        Link = "https://nexus.example/dld/token",
++                        FileName = "El Hobbit.m4b",
++                        Added = DateTimeOffset.UtcNow.AddMinutes(-1),
++                        DownloadQueued = DateTimeOffset.UtcNow.AddMinutes(-1),
++                        DownloadStarted = DateTimeOffset.UtcNow.AddSeconds(-50),
++                        DownloadFinished = DateTimeOffset.UtcNow.AddSeconds(-5),
++                        Completed = DateTimeOffset.UtcNow.AddSeconds(-5)
++                    }
++                ]
++            });
++            await context.SaveChangesAsync();
++        }
++
++        await using (var context = CreateContext())
++        {
++            var torrentData = new TorrentData(context);
++            await torrentData.UpdateComplete(torrentId, null, DateTimeOffset.UtcNow, true);
++        }
++
++        await using (var context = CreateContext())
++        {
++            var torrent = await context.Torrents.SingleAsync(m => m.TorrentId == torrentId);
++            Assert.NotNull(torrent.Completed);
++            Assert.Null(torrent.Error);
++        }
++    }
++
+     [Fact]
+     public async Task CreateDownloads_WhenFilterExpanded_AddsMissingSelectedDownloadsWithoutDuplicatingExistingRows()
+     {
 diff --git a/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs b/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
 index f05ebef..bfa2f67 100644
 --- a/server/RdtClient.Service.Test/Services/TorrentRunnerSlotRecoveryTest.cs
