@@ -1084,7 +1084,7 @@ public class Torrents(
 
         var staleDownloads = torrent.Downloads
                                     .Where(download => download.Completed.HasValue)
-                                    .Where(download => !CompletedDownloadFileExists(torrent, download))
+                                    .Where(download => CompletedDownloadNeedsRequeue(torrent, download))
                                     .ToList();
 
         if (staleDownloads.Count == 0)
@@ -1115,6 +1115,24 @@ public class Torrents(
         torrent.Error = null;
 
         return await torrentData.GetById(torrent.TorrentId) ?? torrent;
+    }
+
+    private Boolean CompletedDownloadNeedsRequeue(Torrent torrent, Download download)
+    {
+        if (IsPreStartSelectedFileMaterializationFailure(torrent, download))
+        {
+            return true;
+        }
+
+        return !CompletedDownloadFileExists(torrent, download);
+    }
+
+    private static Boolean IsPreStartSelectedFileMaterializationFailure(Torrent torrent, Download download)
+    {
+        return !String.IsNullOrWhiteSpace(torrent.IncludeRegex) &&
+               !String.IsNullOrWhiteSpace(download.Error) &&
+               String.IsNullOrWhiteSpace(download.Link) &&
+               !download.DownloadStarted.HasValue;
     }
 
     private Boolean CompletedDownloadFileExists(Torrent torrent, Download download)
