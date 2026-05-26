@@ -432,6 +432,64 @@ public class TorrentsTest
     }
 
     [Fact]
+    public async Task AddMagnetToDebridQueue_WhenTorBoxIncludeRegexHasZeroDownloadRetries_ShouldStoreDefaultSelectedFileRetryBudget()
+    {
+        var previousProvider = Settings.Get.Provider.Provider;
+
+        try
+        {
+            Settings.Get.Provider.Provider = Provider.TorBox;
+
+            var mocks = new Mocks();
+            var hash = "0123456789abcdef0123456789abcdef01234567";
+            var expectedHash = hash.ToUpperInvariant();
+            var magnet = $"magnet:?xt=urn:btih:{hash}&dn=SelectedBook";
+
+            mocks.EnricherMock.Setup(e => e.EnrichMagnetLink(magnet)).ReturnsAsync(magnet);
+            mocks.TorrentDataMock.Setup(t => t.GetByHash(expectedHash)).ReturnsAsync((Torrent?)null);
+            mocks.TorrentDataMock.Setup(t => t.Add(null,
+                                                   expectedHash,
+                                                   magnet,
+                                                   false,
+                                                   DownloadType.Torrent,
+                                                   It.IsAny<DownloadClient>(),
+                                                   It.IsAny<Torrent>()))
+                                 .ReturnsAsync(new Torrent());
+
+            var torrents = new TorrentsService(mocks.TorrentsLoggerMock.Object,
+                                               mocks.TorrentDataMock.Object,
+                                               mocks.DownloadsMock.Object,
+                                               mocks.ProcessFactoryMock.Object,
+                                               new MockFileSystem(),
+                                               mocks.EnricherMock.Object,
+                                               null!,
+                                               null!,
+                                               null!,
+                                               null!,
+                                               null!);
+
+            await torrents.AddMagnetToDebridQueue(magnet, new Torrent
+            {
+                IncludeRegex = "book\\.m4b",
+                DownloadRetryAttempts = 0
+            });
+
+            mocks.TorrentDataMock.Verify(t => t.Add(null,
+                                                    expectedHash,
+                                                    magnet,
+                                                    false,
+                                                    DownloadType.Torrent,
+                                                    It.IsAny<DownloadClient>(),
+                                                    It.Is<Torrent>(torrent => torrent.DownloadRetryAttempts == 3)),
+                                         Times.Once);
+        }
+        finally
+        {
+            Settings.Get.Provider.Provider = previousProvider;
+        }
+    }
+
+    [Fact]
     public async Task Delete_WhenProviderDeleteHangs_DeletesLocalDataAndFiles()
     {
         // Arrange

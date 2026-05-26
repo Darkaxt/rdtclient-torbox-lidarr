@@ -880,7 +880,7 @@ public class Torrents(
         await torrentData.UpdateComplete(download.TorrentId, null, null, false);
     }
 
-    public async Task UpdateComplete(Guid torrentId, String? error, DateTimeOffset datetime, Boolean retry)
+    public async Task UpdateComplete(Guid torrentId, String? error, DateTimeOffset? datetime, Boolean retry)
     {
         await torrentData.UpdateComplete(torrentId, error, datetime, retry);
     }
@@ -981,6 +981,8 @@ public class Torrents(
                                           DownloadType downloadType,
                                           Torrent torrent)
     {
+        EnsureSelectedFileRetryBudget(torrent);
+
         var existingTorrent = await torrentData.GetByHash(infoHash);
 
         if (existingTorrent != null)
@@ -1002,6 +1004,16 @@ public class Torrents(
                                                torrent);
 
         return newTorrent;
+    }
+
+    private static void EnsureSelectedFileRetryBudget(Torrent torrent)
+    {
+        var retryAttempts = TorrentRunner.EffectiveDownloadRetryAttempts(torrent);
+
+        if (retryAttempts > torrent.DownloadRetryAttempts)
+        {
+            torrent.DownloadRetryAttempts = retryAttempts;
+        }
     }
 
     private async Task<Torrent> MergeExistingFilteredTorrent(Torrent existingTorrent, String includeRegex)

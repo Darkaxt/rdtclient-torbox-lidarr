@@ -21,6 +21,7 @@ public class TorrentRunner(
 {
     private static readonly TimeSpan NonProgressingTorBoxSlotGrace = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan StaleStartedDownloadTimeout = TimeSpan.FromMinutes(15);
+    private const Int32 DefaultTorBoxSelectedFileUnrestrictRetryAttempts = 3;
 
     public static readonly ConcurrentDictionary<Guid, DownloadClient> ActiveDownloadClients = new();
     public static readonly ConcurrentDictionary<Guid, UnpackClient> ActiveUnpackClients = new();
@@ -535,6 +536,11 @@ public class TorrentRunner(
                     {
                         logger.LogError(ex, "Cannot unrestrict link: {ex.Message}", ex.Message);
 
+                        if (await TryRequeuePreStartUnrestrictFailure(download, downloads, torrents, ex))
+                        {
+                            return;
+                        }
+
                         await downloads.UpdateError(download.DownloadId, ex.Message);
                         await downloads.UpdateCompleted(download.DownloadId, DateTimeOffset.UtcNow);
                         download.Error = ex.Message;
@@ -853,6 +859,71 @@ public class TorrentRunner(
         }
 
         return recovered;
+    }
+
+    public static async Task<Boolean> TryRequeuePreStartUnrestrictFailure(Download download, IDownloads downloads, Torrents torrents, Exception exception)
+    {
+        var parentTorrent = download.Torrent;
+
+        if (parentTorrent == null ||
+            !IsTorBoxSelectedFileTorrent(parentTorrent) ||
+            download.Link != null ||
+            download.DownloadStarted != null ||
+            !IsRetryableTorBoxUnrestrictFailure(exception))
+        {
+            return false;
+        }
+
+        var retryLimit = EffectiveDownloadRetryAttempts(parentTorrent);
+
+        if (download.RetryCount >= retryLimit)
+        {
+            return false;
+        }
+
+        await downloads.Reset(download.DownloadId);
+        await downloads.UpdateRetryCount(download.DownloadId, download.RetryCount + 1);
+        await torrents.UpdateComplete(parentTorrent.TorrentId, null, null, false);
+
+        download.RetryCount += 1;
+        download.Link = null;
+        download.Completed = null;
+        download.Error = null;
+        parentTorrent.Completed = null;
+        parentTorrent.Error = null;
+
+        return true;
+    }
+
+    public static Int32 EffectiveDownloadRetryAttempts(Torrent torrent)
+    {
+        if (torrent.DownloadRetryAttempts > 0)
+        {
+            return torrent.DownloadRetryAttempts;
+        }
+
+        return IsTorBoxSelectedFileTorrent(torrent) ? DefaultTorBoxSelectedFileUnrestrictRetryAttempts : torrent.DownloadRetryAttempts;
+    }
+
+    private static Boolean IsTorBoxSelectedFileTorrent(Torrent torrent)
+    {
+        return !String.IsNullOrWhiteSpace(torrent.IncludeRegex) &&
+               (torrent.ClientKind == Provider.TorBox || Settings.Get.Provider.Provider == Provider.TorBox);
+    }
+
+    private static Boolean IsRetryableTorBoxUnrestrictFailure(Exception exception)
+    {
+        var message = exception.ToString();
+
+        return message.Contains("please try again later", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("too many requests", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains(" 502", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains(" 503", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains(" 504", StringComparison.OrdinalIgnoreCase);
     }
 
     public static Boolean CountsAgainstProviderDownloadLimit(Torrent torrent, DateTimeOffset now)
